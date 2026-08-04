@@ -32,9 +32,3 @@ __pycache__/
 .idea/
 .DS_Store
 Thumbs.db
-
-# Generated Blog Outputs & Diagrams (ignore generated content, keep folder structure via .gitkeep)
-outputs/*
-!outputs/.gitkeep
-images/*
-!images/.gitkeep
