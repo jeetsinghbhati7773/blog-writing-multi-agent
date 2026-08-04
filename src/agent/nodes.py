@@ -1,12 +1,10 @@
-from __future__ import annotations
-
 import os
+import re
 import time
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-# from langchain_openai import ChatOpenAI
 from langchain_groq import ChatGroq
 from langchain_core.messages import SystemMessage, HumanMessage
 from dotenv import load_dotenv
@@ -29,9 +27,39 @@ from src.agent.tools import (
 
 load_dotenv()
 
-# Initialize default LLM with max_retries for rate limits
-# llm = ChatOpenAI(model="gpt-4.1-mini")
-llm = ChatGroq(model="llama-3.3-70b-versatile", max_retries=10)
+# Sync Streamlit Cloud secrets to os.environ if available
+try:
+    import streamlit as st
+    for k in ["GROQ_API_KEY", "OPENAI_API_KEY", "TAVILY_API_KEY", "POLLINATIONS_API_KEY", "GOOGLE_API_KEY", "LANGCHAIN_API_KEY", "LANGCHAIN_TRACING_V2", "LANGCHAIN_PROJECT"]:
+        if k in st.secrets and k not in os.environ:
+            os.environ[k] = str(st.secrets[k])
+except Exception:
+    pass
+
+def get_llm() -> ChatGroq:
+    """
+    Returns a ChatGroq LLM instance. Uses a dummy key fallback during initial Streamlit Cloud
+    deployment imports to prevent groq.GroqError crash before keys are set.
+    """
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        try:
+            import streamlit as st
+            api_key = st.secrets.get("GROQ_API_KEY")
+        except Exception:
+            pass
+    if not api_key:
+        api_key = "dummy_groq_key_to_prevent_deployment_import_crash"
+
+    return ChatGroq(
+        model="llama-3.3-70b-versatile",
+        groq_api_key=api_key,
+        max_retries=10,
+    )
+
+# Module-level LLM instance for node functions
+llm = get_llm()
+
 
 # -----------------------------
 # 1) Router Node
@@ -51,7 +79,7 @@ If needs_research=true:
 """
 
 def router_node(state: State) -> dict:
-    decider = llm.with_structured_output(RouterDecision)
+    decider = get_llm().with_structured_output(RouterDecision)
     decision = decider.invoke(
         [
             SystemMessage(content=ROUTER_SYSTEM),
@@ -112,7 +140,7 @@ def research_node(state: State) -> dict:
         for item in raw[:15]
     ]
 
-    extractor = llm.with_structured_output(EvidencePack)
+    extractor = get_llm().with_structured_output(EvidencePack)
     pack = extractor.invoke(
         [
             SystemMessage(content=RESEARCH_SYSTEM),
@@ -162,7 +190,7 @@ Output must match Plan schema.
 """
 
 def orchestrator_node(state: State) -> dict:
-    planner = llm.with_structured_output(Plan)
+    planner = get_llm().with_structured_output(Plan)
     mode = state.get("mode", "closed_book")
     evidence = state.get("evidence", [])
 
@@ -247,7 +275,7 @@ def worker_node(payload: dict) -> dict:
     # Stagger parallel worker requests slightly to avoid Groq rate limit burst spikes
     time.sleep(1.5)
 
-    section_md = llm.invoke(
+    section_md = get_llm().invoke(
         [
             SystemMessage(content=WORKER_SYSTEM),
             HumanMessage(
@@ -303,7 +331,7 @@ Return strictly GlobalImagePlan.
 """
 
 def decide_images(state: State) -> dict:
-    planner = llm.with_structured_output(GlobalImagePlan)
+    planner = get_llm().with_structured_output(GlobalImagePlan)
     merged_md = state["merged_md"]
     plan = state["plan"]
     assert plan is not None
