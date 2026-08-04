@@ -51,6 +51,15 @@ st.markdown(
     div[data-testid="stSidebarNav"] {
         margin-bottom: 1rem;
     }
+    div[data-testid="stImage"] img, div[data-testid="stMarkdownContainer"] img {
+        max-height: 300px !important;
+        width: 500px !important;
+        height: auto !important;
+        object-fit: contain !important;
+        border-radius: 8px !important;
+        margin-top: 0.5rem !important;
+        margin-bottom: 0.5rem !important;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -81,12 +90,16 @@ with st.sidebar:
     st.divider()
     st.subheader("🔑 API Key Status")
     openai_set = bool(os.getenv("OPENAI_API_KEY"))
+    groq_set = bool(os.getenv("GROQ_API_KEY"))
     tavily_set = bool(os.getenv("TAVILY_API_KEY"))
+    pollinations_set = bool(os.getenv("POLLINATIONS_API_KEY"))
     google_set = bool(os.getenv("GOOGLE_API_KEY"))
+    langsmith_set = os.getenv("LANGCHAIN_TRACING_V2", "").lower() == "true" and bool(os.getenv("LANGCHAIN_API_KEY"))
 
-    st.markdown(f"- OpenAI API: {'✅ Configured' if openai_set else '⚠️ Missing'}")
+    st.markdown(f"- LLM Engine: {'✅ Groq / OpenAI Configured' if (groq_set or openai_set) else '⚠️ Missing'}")
     st.markdown(f"- Tavily Search: {'✅ Configured' if tavily_set else 'ℹ️ Disabled'}")
-    st.markdown(f"- Gemini Images: {'✅ Configured' if google_set else 'ℹ️ Disabled'}")
+    st.markdown(f"- Pollinations AI Images: {'✅ Configured' if pollinations_set else ('✅ Gemini Fallback' if google_set else 'ℹ️ Disabled')}")
+    st.markdown(f"- LangSmith Tracing: {'✅ Active' if langsmith_set else 'ℹ️ Disabled'}")
 
     # History / Past Blogs Section
     st.divider()
@@ -122,6 +135,8 @@ with st.sidebar:
                     "image_specs": [],
                     "final": md_text,
                 }
+                st.session_state["history_mode"] = True
+                st.session_state["loaded_blog_name"] = selected_file.name
                 st.toast(f"Loaded {selected_file.name}", icon="✅")
 
 # -----------------------------
@@ -129,11 +144,8 @@ with st.sidebar:
 # -----------------------------
 if "last_out" not in st.session_state:
     st.session_state["last_out"] = None
-
-# Main Tabs Setup
-tab_plan, tab_evidence, tab_preview, tab_images, tab_logs = st.tabs(
-    ["🧩 Plan", "🔎 Research Evidence", "📝 Markdown Preview", "🖼️ Diagrams & Images", "🧾 Logs"]
-)
+if "history_mode" not in st.session_state:
+    st.session_state["history_mode"] = False
 
 logs: List[str] = []
 
@@ -147,6 +159,8 @@ if run_btn:
     if not topic.strip():
         st.warning("Please enter a valid blog topic in the sidebar.")
         st.stop()
+
+    st.session_state["history_mode"] = False
 
     inputs: Dict[str, Any] = {
         "topic": topic.strip(),
@@ -200,10 +214,18 @@ if run_btn:
             log("[final] Agent execution successfully finished.")
 
 # -----------------------------
-# Render Results in Tabs
+# Render Results
 # -----------------------------
 out = st.session_state.get("last_out")
-if out:
+is_history = st.session_state.get("history_mode", False)
+
+if is_history and out:
+    st.info(f"📂 **Viewing History Blog:** `{st.session_state.get('loaded_blog_name', '')}`")
+    render_preview_tab(out)
+elif out:
+    tab_plan, tab_evidence, tab_preview, tab_images, tab_logs = st.tabs(
+        ["🧩 Plan", "🔎 Research Evidence", "📝 Markdown Preview", "🖼️ Diagrams & Images", "🧾 Logs"]
+    )
     with tab_plan:
         render_plan_tab(out)
     with tab_evidence:
@@ -215,5 +237,4 @@ if out:
     with tab_logs:
         render_logs_tab(logs)
 else:
-    with tab_preview:
-        st.info("👈 Enter a topic in the sidebar and click **Generate Technical Blog** to start.")
+    st.info("👈 Enter a topic in the sidebar and click **Generate Technical Blog** to start.")

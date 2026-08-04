@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import os
+import time
 from datetime import date, timedelta
 from pathlib import Path
-from typing import List, dict
+from typing import Any, Dict, List, Optional
 
-from langchain_openai import ChatOpenAI
+# from langchain_openai import ChatOpenAI
+from langchain_groq import ChatGroq
 from langchain_core.messages import SystemMessage, HumanMessage
 from dotenv import load_dotenv
 
@@ -27,8 +29,9 @@ from src.agent.tools import (
 
 load_dotenv()
 
-# Initialize default LLM
-llm = ChatOpenAI(model="gpt-4.1-mini")
+# Initialize default LLM with max_retries for rate limits
+# llm = ChatOpenAI(model="gpt-4.1-mini")
+llm = ChatGroq(model="llama-3.3-70b-versatile", max_retries=10)
 
 # -----------------------------
 # 1) Router Node
@@ -91,13 +94,23 @@ Rules:
 """
 
 def research_node(state: State) -> dict:
-    queries = (state.get("queries") or [])[:10]
+    queries = (state.get("queries") or [])[:5]
     raw: List[dict] = []
     for q in queries:
-        raw.extend(tavily_search(q, max_results=6))
+        raw.extend(tavily_search(q, max_results=5))
 
     if not raw:
         return {"evidence": []}
+
+    # Trim search results to prevent exceeding LLM token limits (keep under 12k TPM limit)
+    trimmed_raw = [
+        {
+            "title": item.get("title"),
+            "url": item.get("url"),
+            "snippet": (item.get("content") or item.get("snippet") or "")[:350],
+        }
+        for item in raw[:15]
+    ]
 
     extractor = llm.with_structured_output(EvidencePack)
     pack = extractor.invoke(
@@ -107,7 +120,7 @@ def research_node(state: State) -> dict:
                 content=(
                     f"As-of date: {state['as_of']}\n"
                     f"Recency days: {state['recency_days']}\n\n"
-                    f"Raw results:\n{raw}"
+                    f"Raw results:\n{trimmed_raw}"
                 )
             ),
         ]
@@ -164,7 +177,7 @@ def orchestrator_node(state: State) -> dict:
                     f"Mode: {mode}\n"
                     f"As-of: {state['as_of']} (recency_days={state['recency_days']})\n"
                     f"{'Force blog_kind=news_roundup' if forced_kind else ''}\n\n"
-                    f"Evidence:\n{[e.model_dump() for e in evidence][:16]}"
+                    f"Evidence:\n{[e.model_dump() for e in evidence][:10]}"
                 )
             ),
         ]
@@ -228,8 +241,11 @@ def worker_node(payload: dict) -> dict:
     bullets_text = "\n- " + "\n- ".join(task.bullets)
     evidence_text = "\n".join(
         f"- {e.title} | {e.url} | {e.published_at or 'date:unknown'}"
-        for e in evidence[:20]
+        for e in evidence[:10]
     )
+
+    # Stagger parallel worker requests slightly to avoid Groq rate limit burst spikes
+    time.sleep(1.5)
 
     section_md = llm.invoke(
         [
@@ -279,10 +295,10 @@ Decide if images/diagrams are needed for THIS blog.
 
 Rules:
 - Max 3 images total.
-- Each image must materially improve understanding (diagram/flow/table-like visual).
-- Insert placeholders exactly: [[IMAGE_1]], [[IMAGE_2]], [[IMAGE_3]].
+- Each image must materially improve understanding (diagram/flow/architecture visual).
+- CRITICAL INLINE PLACEMENT: Insert placeholders [[IMAGE_1]], [[IMAGE_2]], [[IMAGE_3]] INLINE directly inside the relevant blog section body (after the section heading or after the explanatory paragraph).
+- DO NOT put all placeholders at the bottom or end of the document.
 - If no images needed: md_with_placeholders must equal input and images=[].
-- Avoid decorative images; prefer technical diagrams with short labels.
 Return strictly GlobalImagePlan.
 """
 
@@ -299,16 +315,34 @@ def decide_images(state: State) -> dict:
                 content=(
                     f"Blog kind: {plan.blog_kind}\n"
                     f"Topic: {state['topic']}\n\n"
-                    "Insert placeholders + propose image prompts.\n\n"
+                    "Insert placeholders INLINE inside relevant sections + propose image prompts.\n\n"
                     f"{merged_md}"
                 )
             ),
         ]
     )
 
+    md_out = image_plan.md_with_placeholders
+    image_specs = [img.model_dump() for img in image_plan.images]
+
+    # Post-processing: If LLM appended placeholders at the very end, move them inline after section headings
+    for spec in image_specs:
+        ph = spec["placeholder"]
+        if ph in md_out:
+            # Check if ph is near the end of the document
+            pos = md_out.rfind(ph)
+            if pos > int(len(md_out) * 0.85):
+                # Remove placeholder from end
+                md_out = md_out.replace(ph, "")
+                # Find an H2 header in the body to insert inline
+                headers = [m.start() for m in re.finditer(r"\n## ", md_out)]
+                if len(headers) >= 2:
+                    target_idx = headers[min(len(headers)-1, 1)]
+                    md_out = md_out[:target_idx] + f"\n\n{ph}\n\n" + md_out[target_idx:]
+
     return {
-        "md_with_placeholders": image_plan.md_with_placeholders,
-        "image_specs": [img.model_dump() for img in image_plan.images],
+        "md_with_placeholders": md_out,
+        "image_specs": image_specs,
     }
 
 
@@ -328,17 +362,17 @@ def generate_and_place_images(state: State) -> dict:
 
     if not image_specs:
         out_file.write_text(md, encoding="utf-8")
-        # Also write to root for backwards compatibility
-        Path(filename_str).write_text(md, encoding="utf-8")
         return {"final": md}
 
-    images_dir = Path("images")
-    images_dir.mkdir(exist_ok=True)
+    # Store images inside a topic-based subfolder under images/<topic_slug>/
+    topic_slug = safe_slug(state.get("topic") or plan.blog_title)
+    topic_images_dir = Path("images") / topic_slug
+    topic_images_dir.mkdir(parents=True, exist_ok=True)
 
     for spec in image_specs:
         placeholder = spec["placeholder"]
         filename = spec["filename"]
-        out_path = images_dir / filename
+        out_path = topic_images_dir / filename
 
         if not out_path.exists():
             try:
@@ -354,9 +388,9 @@ def generate_and_place_images(state: State) -> dict:
                 md = md.replace(placeholder, prompt_block)
                 continue
 
-        img_md = f"![{spec['alt']}](images/{filename})\n*{spec['caption']}*"
+        img_rel_path = f"images/{topic_slug}/{filename}"
+        img_md = f"![{spec['alt']}]({img_rel_path})\n*{spec['caption']}*"
         md = md.replace(placeholder, img_md)
 
     out_file.write_text(md, encoding="utf-8")
-    Path(filename_str).write_text(md, encoding="utf-8")
     return {"final": md}

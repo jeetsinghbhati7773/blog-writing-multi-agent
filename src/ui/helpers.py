@@ -81,19 +81,13 @@ def extract_latest_state(current_state: Dict[str, Any], step_payload: Any) -> Di
 
 def list_past_blogs() -> List[Path]:
     """
-    Returns saved .md files in the outputs directory and root, ordered newest first.
+    Returns saved .md files in the outputs directory, ordered newest first.
     """
     files: List[Path] = []
     outputs_dir = Path("outputs")
     if outputs_dir.exists() and outputs_dir.is_dir():
         files.extend([p for p in outputs_dir.glob("*.md") if p.is_file()])
     
-    cwd = Path(".")
-    root_files = [p for p in cwd.glob("*.md") if p.is_file() and p.name not in ("README.md", "implementation_plan.md", "walkthrough.md")]
-    for rf in root_files:
-        if rf not in files:
-            files.append(rf)
-
     files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     return files
 

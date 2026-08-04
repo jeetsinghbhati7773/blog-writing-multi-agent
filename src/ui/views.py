@@ -139,15 +139,16 @@ def render_images_tab(out: Dict[str, Any]):
         st.json(specs)
 
     if images_dir.exists():
-        files = [p for p in images_dir.iterdir() if p.is_file()]
+        files = [p for p in images_dir.rglob("*") if p.is_file() and p.suffix.lower() in ('.png', '.jpg', '.jpeg', '.webp', '.svg')]
         if not files:
             st.warning("Image directory exists but contains no image files.")
         else:
             st.markdown("#### **Generated Image Artifacts**")
             cols = st.columns(min(len(files), 3))
-            for i, p in enumerate(sorted(files)):
+            for i, p in enumerate(sorted(files, key=lambda x: str(x))):
+                rel_name = str(p.relative_to(images_dir))
                 with cols[i % len(cols)]:
-                    st.image(str(p), caption=p.name, use_container_width=True)
+                    st.image(str(p), caption=rel_name, width=400)
 
             z = images_zip(images_dir)
             if z:

@@ -62,11 +62,17 @@ def render_markdown_with_local_images(md: str):
                     parts[i + 1] = ("md", rest)
 
         if src.startswith("http://") or src.startswith("https://"):
-            st.image(src, caption=caption or (alt or None), use_container_width=True)
+            try:
+                st.image(src, caption=caption or (alt or None), width=380)
+            except Exception as e:
+                st.caption(f"🖼️ *Image URL:* [{alt or 'View Image'}]({src})")
         else:
             img_path = resolve_image_path(src)
             if img_path.exists():
-                st.image(str(img_path), caption=caption or (alt or None), use_container_width=True)
+                try:
+                    st.image(str(img_path), caption=caption or (alt or None), width=380)
+                except Exception:
+                    st.info(f"🖼️ **Diagram / Image Placeholder:** {caption or alt or 'Technical Diagram'}")
             else:
                 st.warning(f"Image artifact not found: `{src}` (searched `{img_path}`)")
 

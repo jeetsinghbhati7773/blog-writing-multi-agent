@@ -1,26 +1,40 @@
-# Virtual environment
+# Python & Virtual Environment
 venv/
 .venv/
 env/
 ENV/
-
-# Environment files
-.env
-.env.local
-
-# Python cache & bytecode
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .pytest_cache/
+.coverage
 
-# IDE & OS settings
+# Environment & API Keys (DO NOT COMMIT SECRETS)
+.env
+.env.local
+.env.*.local
+
+# Jupyter Notebook Checkpoints & Cache
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Streamlit Cache
+.streamlit/cache/
+
+# Log & Temporary Files
+*.log
+*.tmp
+*.zip
+
+# OS & IDE Settings
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
 
-# Output markdown files and generated images (optional: keep if needed)
-# images/
-# *.md
+# Generated Blog Outputs & Diagrams (ignore generated content, keep folder structure via .gitkeep)
+outputs/*
+!outputs/.gitkeep
+images/*
+!images/.gitkeep
