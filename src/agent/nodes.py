@@ -127,8 +127,33 @@ def research_node(state: State) -> dict:
     for q in queries:
         raw.extend(tavily_search(q, max_results=5))
 
+    doc_evidence: List[EvidenceItem] = []
+    if state.get("use_uploaded_docs"):
+        try:
+            from src.rag.retriever import DocumentRetriever
+            retriever = DocumentRetriever()
+            doc_queries = queries if queries else [state.get("topic", "")]
+            for dq in doc_queries[:3]:
+                chunks = retriever.retrieve_relevant_chunks(dq, k=3)
+                for chunk in chunks:
+                    meta = chunk.get("metadata", {})
+                    fn = meta.get("filename", "Uploaded Document")
+                    page = meta.get("page")
+                    page_str = f" (Page {page})" if page else ""
+                    doc_evidence.append(
+                        EvidenceItem(
+                            title=f"Uploaded Document: {fn}{page_str}",
+                            url=f"doc://{fn}",
+                            published_at=None,
+                            snippet=chunk.get("content", "")[:350],
+                            source=fn,
+                        )
+                    )
+        except Exception:
+            pass
+
     if not raw:
-        return {"evidence": []}
+        return {"evidence": doc_evidence}
 
     # Trim search results to prevent exceeding LLM token limits (keep under 12k TPM limit)
     trimmed_raw = [
@@ -158,14 +183,19 @@ def research_node(state: State) -> dict:
     for e in pack.evidence:
         if e.url:
             dedup[e.url] = e
+    for de in doc_evidence:
+        if de.url not in dedup:
+            dedup[de.url] = de
+
     evidence = list(dedup.values())
 
     if state.get("mode") == "open_book":
         as_of = date.fromisoformat(state["as_of"])
         cutoff = as_of - timedelta(days=int(state["recency_days"]))
-        evidence = [e for e in evidence if (d := iso_to_date(e.published_at)) and d >= cutoff]
+        evidence = [e for e in evidence if e.url.startswith("doc://") or ((d := iso_to_date(e.published_at)) and d >= cutoff)]
 
     return {"evidence": evidence}
+
 
 
 # -----------------------------

@@ -84,4 +84,8 @@ class State(TypedDict):
     md_with_placeholders: str
     image_specs: List[dict]
 
+    # optional document rag integration
+    use_uploaded_docs: Optional[bool]
+
     final: str
+
