@@ -114,7 +114,69 @@ def test_retriever_empty_answer(temp_db_dir):
     vs = ChromaVectorStore(db_path=temp_db_dir, collection_name="test_empty")
     retriever = DocumentRetriever(vectorstore=vs)
 
-    answer, sources, raw_chunks = retriever.answer_question("How does quantum computing work?")
+    answer, sources, raw_chunks = retriever.answer_question("How does quantum computing work?", mode="strict")
     assert "not contain enough information" in answer
     assert sources == []
     assert raw_chunks == []
+
+
+def test_retriever_build_search_query(temp_db_dir):
+    vs = ChromaVectorStore(db_path=temp_db_dir, collection_name="test_query_builder")
+    retriever = DocumentRetriever(vectorstore=vs)
+
+    # Empty history
+    query1 = retriever.build_search_query("Explain self-attention")
+    assert query1 == "Explain self-attention"
+
+    # Multi-turn history with short query
+    history = [
+        {"role": "user", "content": "Tell me about Transformer models in deep learning."},
+        {"role": "assistant", "content": "Transformers use self-attention mechanism."},
+    ]
+    query2 = retriever.build_search_query("What is it?", chat_history=history)
+    assert "Transformer models" in query2
+
+
+def test_retriever_build_prompt_messages(temp_db_dir):
+    vs = ChromaVectorStore(db_path=temp_db_dir, collection_name="test_prompt_builder")
+    retriever = DocumentRetriever(vectorstore=vs)
+
+    chunks = [{
+        "content": "Self-attention computes dynamic weights across input tokens.",
+        "metadata": {"filename": "paper.pdf", "file_type": "pdf", "page": 3}
+    }]
+    history = [
+        {"role": "user", "content": "What are neural networks?"},
+        {"role": "assistant", "content": "Neural networks are computational models."},
+    ]
+
+    messages_strict = retriever.build_prompt_messages("Explain self-attention", history, chunks, mode="strict")
+    assert len(messages_strict) >= 3
+    assert "DOCUMENT CONTEXT" in messages_strict[0].content
+    assert "paper.pdf — Page 3" in messages_strict[0].content
+
+    messages_general = retriever.build_prompt_messages("Hello!", history, [], mode="general")
+    assert "helpful, expert technical AI assistant" in messages_general[0].content
+
+
+def test_embedding_determinism():
+    from src.rag.embeddings import LightweightEmbeddingFunction
+    embedder = LightweightEmbeddingFunction(dim=384)
+    vec1 = embedder._embed_text("Deep Learning and Neural Networks")
+    vec2 = embedder._embed_text("Deep Learning and Neural Networks")
+
+    assert len(vec1) == 384
+    assert vec1 == vec2  # 100% deterministic across process runs
+
+
+def test_cosine_similarity_precision():
+    from src.rag.vectorstore import _cosine_similarity
+    vec_a = [1.0, 0.0, 0.0]
+    vec_b = [1.0, 0.0, 0.0]
+    vec_c = [0.0, 1.0, 0.0]
+
+    assert abs(_cosine_similarity(vec_a, vec_b) - 1.0) < 1e-6
+    assert abs(_cosine_similarity(vec_a, vec_c) - 0.0) < 1e-6
+    assert _cosine_similarity([], []) == 0.0
+
+

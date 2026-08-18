@@ -1,16 +1,17 @@
-# 🚀 AI Content Studio: Multi-Agent Blog Generator + AI Chat + Document RAG
+# 🚀 AI Content Studio: Multi-Agent Blog Generator + MCP Tools + Document RAG
 
 [![Python](https://img.shields.io/badge/Python-3.11-blue.svg)](https://www.python.org/)
 [![LangGraph](https://img.shields.io/badge/LangGraph-Multi--Agent-green.svg)](https://python.langchain.com/docs/langgraph)
 [![ChromaDB](https://img.shields.io/badge/ChromaDB-Local%20Vector%20Store-yellow.svg)](https://www.trychroma.com/)
+[![MCP](https://img.shields.io/badge/MCP-FastMCP%20%26%20Tools-blueviolet.svg)](https://modelcontextprotocol.io/)
 [![Streamlit](https://img.shields.io/badge/Frontend-Streamlit-red.svg)](https://streamlit.io/)
-[![Groq](https://img.shields.io/badge/LLM-Groq%20Llama%203.3%2070B-purple.svg)](https://groq.com/)
+[![Groq](https://img.shields.io/badge/LLM-Groq%20GPT--OSS%20120B-purple.svg)](https://groq.com/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 A unified **AI Content Studio** combining:
-1. 📝 **Autonomous Multi-Agent Blog / Report Generator**: Powered by **LangGraph**, **Groq Llama 3.3 70B**, **Tavily Web Search**, and automatic technical diagram generation.
-2. 💬 **Multi-Turn AI Chat**: Interactive developer assistant retained via Streamlit session state (`st.session_state.messages`).
-3. 📚 **Document Chat (RAG)**: Zero-cost local Retrieval-Augmented Generation powered by **ChromaDB** (`chroma_db/`) supporting PDF, TXT, MD, and DOCX indexing with precise source citations.
+1. 📝 **Autonomous Multi-Agent Blog Generator**: Powered by **LangGraph**, **Groq** (`openai/gpt-oss-120b`), **Tavily Web Search**, exponential rate-limit retry logic, and technical diagram synthesis.
+2. 🤖 **General AI Chat + MCP Server Tools**: Interactive multi-turn assistant with built-in Model Context Protocol (MCP) server tools (`add_expense`, `list_expenses`, `summarize`), live stock prices (`get_stock_price`), and web search (`duckduckgo_search`).
+3. 📚 **Document Intelligence (RAG)**: Zero-cost local Retrieval-Augmented Generation powered by **ChromaDB** with real-time visual 3-step pipeline progress (Extraction 📄 ➔ Chunking ✂️ ➔ Embedding & Vector Ingestion 🧠).
 
 ---
 
@@ -18,22 +19,23 @@ A unified **AI Content Studio** combining:
 
 | Feature Mode | Core Component | Description |
 | :--- | :--- | :--- |
-| 📝 **Blog / Report Generator** | LangGraph State Graph | Autonomous multi-agent research, planning, parallel section writing, and visual diagram synthesis. |
-| 💬 **AI Chat** | Multi-Turn LLM Engine | Interactive technical chat interface preserving full multi-turn conversational context. |
-| 📚 **Document Chat (RAG)** | Persistent ChromaDB | Local RAG system for PDF, TXT, MD, DOCX indexing, similarity search, and grounded Q&A with page citations. |
-| 🔄 **RAG Blog Integration** | ChromaDB + Tavily | Optionally pull uploaded document context directly into the blog research evidence pipeline. |
+| 📝 **Blog Generator** | LangGraph State Graph | Autonomous multi-agent research, planning, parallel section writing with Groq rate-limit staggering, and visual diagrams. |
+| 🤖 **General AI Chat** | Multi-Turn LLM + MCP Tools | Interactive chat automatically bound with MCP server tools (Expenses, Stocks, Web Search) with concise single-sentence action synthesis. |
+| 📚 **Strict Document RAG** | Persistent ChromaDB | Answers strictly grounded in uploaded PDF/TXT/MD/DOCX document chunks with page citations and zero external hallucination. |
+| 🔀 **Hybrid Mode** | ChromaDB + Web Evidence | Combines uploaded document context with external search & general AI technical knowledge. |
+| 🗂 **Knowledge Base Manager** | Live 3-Step RAG Pipeline | Visual progress tracking for page text extraction, 1000-char semantic chunking, and 384-dim dense vector embedding ingestion (`all-MiniLM-L6-v2`). |
 
 ---
 
 ## 📊 System Architecture & Workflow
 
-### Studio Overview & Navigation
+### Studio Navigation
 ```mermaid
 graph TD
-    User([User Selector]) --> Sidebar{Studio Navigation}
-    Sidebar -- 📝 Blog Generator --> LangGraphEngine[LangGraph Multi-Agent Workflow]
-    Sidebar -- 💬 AI Chat --> LLMChatEngine[Multi-Turn LLM Stream Engine]
-    Sidebar -- 📚 Document Chat --> ChromaRAGEngine[ChromaDB Local Vector Search & RAG]
+    User([User Navbar Selector]) --> Sidebar{Studio Navigation}
+    Sidebar -- 📝 Article Generator --> LangGraphEngine[LangGraph Multi-Agent Workflow]
+    Sidebar -- 💬 Document & AI Chat --> ChatEngine[Unified AI Chat + MCP Tools + RAG]
+    Sidebar -- 🗂 Knowledge Base --> ChromaDBManager[ChromaDB Visual Vector Manager]
 ```
 
 ### LangGraph Multi-Agent Blog Pipeline
@@ -43,22 +45,32 @@ graph LR
     Router -- Needs Research --> Research[🔎 research + ChromaDB Context]
     Router -- Evergreen Topic --> Orchestrator[📋 orchestrator]
     Research --> Orchestrator
-    Orchestrator --> Worker[✍️ parallel workers]
+    Orchestrator --> Worker[✍️ parallel workers + exponential backoff retry]
     Worker --> Reducer[🧩 reducer subgraph]
     Reducer --> END([✅ END])
 ```
 
 ---
 
+## 🛠️ MCP (Model Context Protocol) Integration
+
+The assistant connects to external remote and local MCP tool providers:
+
+- **Remote FastMCP Server**: HTTP/SSE endpoint (`https://splendid-gold-dingo.fastmcp.app/mcp`) for expense tracking (`add_expense`, `list_expenses`, `summarize`).
+- **Stock Price Tool**: Real-time financial quotes via Alpha Vantage (`get_stock_price`).
+- **DuckDuckGo Web Search**: Live search results (`duckduckgo_search`).
+- **Universal Sync/Async Executor**: Wraps async `StructuredTool` instances (`execute_tool`) seamlessly on a dedicated background event loop.
+
+---
+
 ## 📚 Document RAG Module (`src/rag/`)
 
-- **Persistent Vector Storage**: Local ChromaDB instance stored under `chroma_db/`. No external database (PostgreSQL, Redis) required.
-- **Zero-Cost Embeddings**: Offline Sentence Transformers (`all-MiniLM-L6-v2`) CPU embedding model for fast, deterministic vector embeddings out-of-the-box.
-- **Supported Formats**:
-  - `📄 .pdf`: Parsed via `pypdf` with page-by-page extraction and page metadata.
-  - `📝 .txt` & `Markdown (.md)`: Clean UTF-8 text decoding.
-  - `📑 .docx`: Parsed via `python-docx` paragraph extraction.
-- **Grounded Q&A**: Strict System Prompt grounding ensures answers rely exclusively on retrieved document chunks and explicitly flags missing information when out-of-context.
+- **Persistent Vector Storage**: Local SQLite-backed ChromaDB store under `chroma_db/`. No external database required.
+- **Zero-Cost Embeddings**: Offline Sentence Transformers (`all-MiniLM-L6-v2`) CPU embedding model for fast 384-dimensional vector embeddings out-of-the-box.
+- **Visual Indexing Pipeline**: Real-time 3-step status and progress bar:
+  1. 📄 **Page & Text Extraction** (`pypdf`, `python-docx`)
+  2. ✂️ **Semantic Chunking** (1,000 chars, 150 overlap)
+  3. 🧠 **Dense Vector Embedding & Storage** (ChromaDB)
 
 ---
 
@@ -66,11 +78,11 @@ graph LR
 
 | Provider | Model / Endpoint | Role |
 | :--- | :--- | :--- |
-| **Groq** | `llama-3.3-70b-versatile` | Core LLM (Router, Orchestrator, Workers, RAG QA, Chat) |
+| **Groq** | `openai/gpt-oss-120b` / `qwen/qwen3.6-27b` | Core LLM (Router, Orchestrator, Workers, MCP Tool Binding, RAG QA) |
+| **MCP Client** | `FastMCP HTTP Stream` | Remote & local MCP tool invocation |
 | **SentenceTransformers** | `all-MiniLM-L6-v2` | Zero-cost local CPU text embedding generation |
-| **ChromaDB** | Local Persistent Storage | Local vector database (`chroma_db/`) |
-| **Tavily** | `tavily-search` | Live web evidence retrieval |
-| **Pollinations.ai / Gemini** | Image Endpoints | Visual diagram & image generation |
+| **ChromaDB** | Local Persistent SQLite | Vector database (`chroma_db/`) |
+| **DuckDuckGo & Tavily** | `ddgs` & `tavily-search` | Live web evidence & score retrieval |
 
 ---
 
@@ -90,6 +102,7 @@ python -m venv venv
 pip install -r requirements.txt
 
 # 4. Configure API Keys in .env
+# Set GROQ_API_KEY, GROQ_MODEL="openai/gpt-oss-120b", TAVILY_API_KEY
 cp .env.example .env
 
 # 5. Launch AI Content Studio
@@ -111,4 +124,3 @@ python -m pytest tests/test_rag.py
 ## 📄 License
 
 Distributed under the **MIT License**.
-

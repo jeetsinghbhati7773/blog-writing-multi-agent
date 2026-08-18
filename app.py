@@ -1,35 +1,79 @@
 from __future__ import annotations
 
 import json
-import os
 from datetime import date
-from pathlib import Path
 from typing import Any, Dict, List
 
 import streamlit as st
 
 from src.agent.graph import app as graph_app
-from src.ui.helpers import (
-    try_stream,
-    extract_latest_state,
-    list_past_blogs,
-    read_md_file,
-    extract_title_from_md,
-)
-from src.ui.views import (
-    render_plan_tab,
-    render_evidence_tab,
-    render_preview_tab,
-    render_images_tab,
-    render_logs_tab,
-)
-from src.ui.chat_views import (
-    render_ai_chat_view,
-    render_document_chat_view,
-)
+from src.ui.theme import apply_theme
+import importlib
+
+try:
+    from src.ui.components import (
+        render_studio_header,
+        render_content_brief,
+        render_workflow_progress,
+        render_system_status_sidebar,
+    )
+except ImportError:
+    import src.ui.components as comp_mod
+    importlib.reload(comp_mod)
+    from src.ui.components import (
+        render_studio_header,
+        render_content_brief,
+        render_workflow_progress,
+        render_system_status_sidebar,
+    )
+
+try:
+    from src.ui.helpers import (
+        try_stream,
+        extract_latest_state,
+        list_past_blogs,
+        read_md_file,
+        extract_title_from_md,
+    )
+except ImportError:
+    import src.ui.helpers as helpers_mod
+    importlib.reload(helpers_mod)
+    from src.ui.helpers import (
+        try_stream,
+        extract_latest_state,
+        list_past_blogs,
+        read_md_file,
+        extract_title_from_md,
+    )
+
+try:
+    from src.ui.views import (
+        render_article_workspace,
+        render_library_workspace,
+        render_knowledge_base_workspace,
+    )
+except ImportError:
+    import src.ui.views as views_mod
+    importlib.reload(views_mod)
+    from src.ui.views import (
+        render_article_workspace,
+        render_library_workspace,
+        render_knowledge_base_workspace,
+    )
+
+try:
+    from src.ui.chat_views import (
+        render_unified_chat_view,
+    )
+except ImportError:
+    import src.ui.chat_views as chat_views_mod
+    importlib.reload(chat_views_mod)
+    from src.ui.chat_views import (
+        render_unified_chat_view,
+    )
 
 # -----------------------------
-# Streamlit Page Configuration
+# 1. Streamlit Page Configuration
 # -----------------------------
 st.set_page_config(
     page_title="AI Content Studio",
@@ -38,234 +82,245 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# -----------------------------
-# Custom Styling / CSS Token Injection
-# -----------------------------
-st.markdown(
-    """
-    <style>
-    .main .block-container {
-        padding-top: 2rem;
-        padding-bottom: 3rem;
-    }
-    .stButton > button {
-        border-radius: 8px;
-        font-weight: 600;
-    }
-    div[data-testid="stSidebarNav"] {
-        margin-bottom: 1rem;
-    }
-    div[data-testid="stImage"] img, div[data-testid="stMarkdownContainer"] img {
-        max-height: 300px !important;
-        width: 500px !important;
-        height: auto !important;
-        object-fit: contain !important;
-        border-radius: 8px !important;
-        margin-top: 0.5rem !important;
-        margin-bottom: 0.5rem !important;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+# Apply sleek dark design tokens and custom CSS rules
+apply_theme()
 
 # -----------------------------
-# App Header & Mode Selector
+# 2. Studio Shell Navigation (Callback Architecture)
 # -----------------------------
-st.title("🚀 AI Content Studio")
+if "app_mode" not in st.session_state:
+    st.session_state["app_mode"] = "📝 Article Generator"
+
+
+def cb_nav_radio_change():
+    st.session_state["app_mode"] = st.session_state["nav_radio_widget"]
+
+
+def cb_create_new_article():
+    st.session_state["last_out"] = None
+    st.session_state["history_mode"] = False
+    st.session_state["selected_past_article"] = None
+    st.session_state["app_mode"] = "📝 Article Generator"
+
+
+def cb_select_past_article(filename: str, md_text: str):
+    st.session_state["selected_past_article"] = filename
+    st.session_state["last_out"] = {
+        "plan": None,
+        "evidence": [],
+        "image_specs": [],
+        "final": md_text,
+    }
+    st.session_state["history_mode"] = True
+    st.session_state["loaded_blog_name"] = filename
+    st.session_state["app_mode"] = "📝 Article Generator"
+
+
+def cb_new_conversation():
+    st.session_state["unified_messages"] = []
+
+
+def cb_clear_chat_history():
+    st.session_state["unified_messages"] = []
+
 
 with st.sidebar:
-    st.header("⚙️ Studio Navigation")
-    app_mode = st.radio(
-        "Select Mode:",
-        ["📝 Blog / Report Generator", "💬 AI Chat", "📚 Document Chat"],
-        index=0,
+    st.markdown("## **🚀 AI Content Studio**")
+
+    modes_list = [
+        "📝 Article Generator",
+        "💬 Document & AI Chat",
+        "🗂 Knowledge Base",
+    ]
+
+    if st.session_state["app_mode"] not in modes_list:
+        st.session_state["app_mode"] = "📝 Article Generator"
+    curr_index = modes_list.index(st.session_state["app_mode"])
+
+    st.radio(
+        "Navigation",
+        modes_list,
+        index=curr_index,
+        key="nav_radio_widget",
+        on_change=cb_nav_radio_change,
     )
+
+    app_mode = st.session_state["app_mode"]
     st.divider()
-
-if app_mode == "💬 AI Chat":
-    render_ai_chat_view()
-
-elif app_mode == "📚 Document Chat":
-    render_document_chat_view()
-
-else:
+    
     # -----------------------------
-    # Mode 1: Blog / Report Generator
+    # Sidebar Section based on Sketches
     # -----------------------------
-    st.caption("Autonomous multi-agent technical blog writer powered by LangGraph, Tavily Search, ChromaDB RAG, and Gemini Imagen.")
-
-    # -----------------------------
-    # Sidebar Setup for Blog Generator
-    # -----------------------------
-    with st.sidebar:
-        st.header("⚡ Generator Configuration")
-
-        topic = st.text_area(
-            "Blog Topic / Prompt",
-            placeholder="e.g. Architecting High-Performance RAG Pipelines with Vector Search",
-            height=120,
-        )
-        as_of = st.date_input("As-of Target Date", value=date.today())
-
-        use_uploaded_docs = st.checkbox(
-            "☑ Use uploaded documents as research context",
-            value=False,
-            help="If enabled, queries ChromaDB for relevant uploaded document chunks to include as evidence.",
+    if app_mode == "📝 Article Generator":
+        # Action button (Sketch 1)
+        st.button(
+            "✨ Create a new Article",
+            use_container_width=True,
+            type="primary",
+            key="sb_create_new_btn",
+            on_click=cb_create_new_article,
         )
 
-        run_btn = st.button("🚀 Generate Technical Blog", type="primary", use_container_width=True)
-
-        # API Status Indicators
-        st.divider()
-        st.subheader("🔑 API Key Status")
-        openai_set = bool(os.getenv("OPENAI_API_KEY"))
-        groq_set = bool(os.getenv("GROQ_API_KEY"))
-        tavily_set = bool(os.getenv("TAVILY_API_KEY"))
-        pollinations_set = bool(os.getenv("POLLINATIONS_API_KEY"))
-        google_set = bool(os.getenv("GOOGLE_API_KEY"))
-        langsmith_set = os.getenv("LANGCHAIN_TRACING_V2", "").lower() == "true" and bool(os.getenv("LANGCHAIN_API_KEY"))
-
-        st.markdown(f"- LLM Engine: {'✅ Groq / OpenAI Configured' if (groq_set or openai_set) else '⚠️ Missing'}")
-        st.markdown(f"- Tavily Search: {'✅ Configured' if tavily_set else 'ℹ️ Disabled'}")
-        st.markdown(f"- Pollinations AI Images: {'✅ Configured' if pollinations_set else ('✅ Gemini Fallback' if google_set else 'ℹ️ Disabled')}")
-        st.markdown(f"- LangSmith Tracing: {'✅ Active' if langsmith_set else 'ℹ️ Disabled'}")
-
-        # History / Past Blogs Section
-        st.divider()
-        st.subheader("📂 Saved Blog History")
-
+        st.markdown("#### **📜 Past / History**")
         past_files = list_past_blogs()
         if not past_files:
-            st.caption("No saved blogs found (*.md in output folder).")
+            st.caption("No saved articles found.")
         else:
-            options: List[str] = []
-            file_by_label: Dict[str, Path] = {}
-            for p in past_files[:50]:
-                try:
-                    md_text = read_md_file(p)
-                    title = extract_title_from_md(md_text, p.stem)
-                except Exception:
-                    title = p.stem
-                label = f"{title[:35]}… ({p.name})" if len(title) > 35 else f"{title} ({p.name})"
-                options.append(label)
-                file_by_label[label] = p
+            with st.container(height=260):
+                for idx, p in enumerate(past_files):
+                    num = len(past_files) - idx
+                    try:
+                        md_text = read_md_file(p)
+                        title = extract_title_from_md(md_text, p.stem)
+                    except Exception:
+                        md_text = ""
+                        title = p.stem
+                    label = f"{num}. {title[:24]}…" if len(title) > 24 else f"{num}. {title}"
+                    st.button(
+                        label,
+                        key=f"sb_hist_{p.name}",
+                        use_container_width=True,
+                        on_click=cb_select_past_article,
+                        args=(p.name, md_text),
+                    )
 
-            selected_label = st.selectbox(
-                "Select a blog to load",
-                options=options,
-            )
-            if st.button("📖 Load Selected Blog", use_container_width=True):
-                selected_file = file_by_label.get(selected_label)
-                if selected_file:
-                    md_text = read_md_file(selected_file)
-                    st.session_state["last_out"] = {
-                        "plan": None,
-                        "evidence": [],
-                        "image_specs": [],
-                        "final": md_text,
-                    }
-                    st.session_state["history_mode"] = True
-                    st.session_state["loaded_blog_name"] = selected_file.name
-                    st.toast(f"Loaded {selected_file.name}", icon="✅")
+    elif app_mode == "💬 Document & AI Chat":
+        # Action button (Sketch 2)
+        st.button(
+            "💬 Start a new conversation",
+            use_container_width=True,
+            type="primary",
+            key="sb_new_chat_btn",
+            on_click=cb_new_conversation,
+        )
 
-    # -----------------------------
-    # Session State Initialization
-    # -----------------------------
+        st.markdown("#### **📜 History**")
+        messages = st.session_state.get("unified_messages", [])
+        user_msgs = [m for m in messages if m.get("role") == "user"]
+        if not user_msgs:
+            st.caption("No active conversation turns.")
+        else:
+            with st.container(height=240):
+                for idx, m in enumerate(user_msgs):
+                    cnt = m["content"]
+                    lbl = f"{idx + 1}. {cnt[:24]}…" if len(cnt) > 24 else f"{idx + 1}. {cnt}"
+                    st.caption(lbl)
+
+        st.button(
+            "🗑️ Clear all past chat",
+            use_container_width=True,
+            key="sb_clear_chat_btn",
+            on_click=cb_clear_chat_history,
+        )
+
+    st.divider()
+
+    # System Status at the bottom of the sidebar as sketched in both wireframes
+    render_system_status_sidebar()
+
+# -----------------------------
+# 3. Mode Router Execution
+# -----------------------------
+if app_mode in ("💬 Document & AI Chat", "💬 AI Chat", "📚 Document Chat"):
+    render_studio_header(
+        title="Document Intelligence Chat",
+        subtitle="Conversational RAG assistant grounded in your uploaded knowledge base.",
+    )
+    render_unified_chat_view()
+
+elif app_mode == "🗂 Knowledge Base":
+    render_studio_header(
+        title="Knowledge Base Storage",
+        subtitle="Manage vector database collections, documents, and chunk memory.",
+    )
+    render_knowledge_base_workspace()
+
+else:
+    # Mode 1: Article Generator / Viewer
     if "last_out" not in st.session_state:
         st.session_state["last_out"] = None
     if "history_mode" not in st.session_state:
         st.session_state["history_mode"] = False
 
-    logs: List[str] = []
-
-    def log(msg: str):
-        logs.append(msg)
-
-    # -----------------------------
-    # Execution Flow Trigger
-    # -----------------------------
-    if run_btn:
-        if not topic.strip():
-            st.warning("Please enter a valid blog topic in the sidebar.")
-            st.stop()
-
-        st.session_state["history_mode"] = False
-
-        inputs: Dict[str, Any] = {
-            "topic": topic.strip(),
-            "mode": "",
-            "needs_research": False,
-            "queries": [],
-            "evidence": [],
-            "plan": None,
-            "as_of": as_of.isoformat(),
-            "recency_days": 7,
-            "use_uploaded_docs": use_uploaded_docs,
-            "sections": [],
-            "merged_md": "",
-            "md_with_placeholders": "",
-            "image_specs": [],
-            "final": "",
-        }
-
-        status = st.status("Executing Multi-Agent Workflow…", expanded=True)
-        progress_area = st.empty()
-
-        current_state: Dict[str, Any] = {}
-        last_node = None
-
-        for kind, payload in try_stream(graph_app, inputs):
-            if kind in ("updates", "values"):
-                node_name = None
-                if isinstance(payload, dict) and len(payload) == 1 and isinstance(next(iter(payload.values())), dict):
-                    node_name = next(iter(payload.keys()))
-                if node_name and node_name != last_node:
-                    status.write(f"➡️ Executing Node: `{node_name}`")
-                    last_node = node_name
-
-                current_state = extract_latest_state(current_state, payload)
-
-                summary = {
-                    "mode": current_state.get("mode"),
-                    "needs_research": current_state.get("needs_research"),
-                    "queries": current_state.get("queries", [])[:5] if isinstance(current_state.get("queries"), list) else [],
-                    "evidence_count": len(current_state.get("evidence", []) or []),
-                    "tasks_planned": len((current_state.get("plan") or {}).get("tasks", [])) if isinstance(current_state.get("plan"), dict) else None,
-                    "sections_completed": len(current_state.get("sections", []) or []),
-                    "images_planned": len(current_state.get("image_specs", []) or []),
-                }
-                progress_area.json(summary)
-                log(f"[{kind}] {json.dumps(payload, default=str)[:1200]}")
-
-            elif kind == "final":
-                out = payload
-                st.session_state["last_out"] = out
-                status.update(label="✅ Blog Generation Complete!", state="complete", expanded=False)
-                log("[final] Agent execution successfully finished.")
-
-    # -----------------------------
-    # Render Results
-    # -----------------------------
-    out = st.session_state.get("last_out")
     is_history = st.session_state.get("history_mode", False)
+    out = st.session_state.get("last_out")
+    loaded_name = st.session_state.get("loaded_blog_name", "")
 
     if is_history and out:
-        st.info(f"📂 **Viewing History Blog:** `{st.session_state.get('loaded_blog_name', '')}`")
-        render_preview_tab(out)
-    elif out:
-        tab_plan, tab_evidence, tab_preview, tab_images, tab_logs = st.tabs(
-            ["🧩 Plan", "🔎 Research Evidence", "📝 Markdown Preview", "🖼️ Diagrams & Images", "🧾 Logs"]
+        # Dedicated Past Article Viewer Mode
+        render_studio_header(
+            title="Past Article Viewer",
+            subtitle=f"Viewing saved technical article from archive: {loaded_name}",
         )
-        with tab_plan:
-            render_plan_tab(out)
-        with tab_evidence:
-            render_evidence_tab(out)
-        with tab_preview:
-            render_preview_tab(out)
-        with tab_images:
-            render_images_tab(out)
-        with tab_logs:
-            render_logs_tab(logs)
+        render_article_workspace(out, is_history=True, blog_name=loaded_name)
     else:
-        st.info("👈 Enter a topic in the sidebar and click **Generate Technical Blog** to start.")
+        # New Article Generator Mode
+        render_studio_header()
+
+        logs: List[str] = []
+        def log(msg: str):
+            logs.append(msg)
+
+        # Render Content Brief Editor
+        run_btn, brief = render_content_brief()
+
+        # Trigger Generation Workflow
+        if run_btn:
+            if not brief["topic_raw"]:
+                st.warning("Please enter a valid article topic in the Content Brief above.")
+                st.stop()
+
+            st.session_state["history_mode"] = False
+
+            inputs: Dict[str, Any] = {
+                "topic": brief["full_prompt"],
+                "mode": "",
+                "needs_research": False,
+                "queries": [],
+                "evidence": [],
+                "plan": None,
+                "as_of": brief["as_of"].isoformat() if isinstance(brief["as_of"], date) else brief["as_of"],
+                "recency_days": 7,
+                "use_uploaded_docs": brief["use_uploaded_docs"],
+                "sections": [],
+                "merged_md": "",
+                "md_with_placeholders": "",
+                "image_specs": [],
+                "final": "",
+            }
+
+            status = st.status("🚀 Running Autonomous Multi-Agent Pipeline...", expanded=True)
+            progress_area = st.empty()
+
+            current_state: Dict[str, Any] = {"_completed_nodes": []}
+            last_node = None
+
+            for kind, payload in try_stream(graph_app, inputs):
+                if kind in ("updates", "values"):
+                    node_name = None
+                    if isinstance(payload, dict) and len(payload) == 1 and isinstance(next(iter(payload.values())), dict):
+                        node_name = next(iter(payload.keys()))
+                    if node_name and node_name != last_node:
+                        status.write(f"➡️ Active Agent Node: `{node_name}`")
+                        if last_node and last_node not in current_state["_completed_nodes"]:
+                            current_state["_completed_nodes"].append(last_node)
+                        last_node = node_name
+
+                    current_state = extract_latest_state(current_state, payload)
+
+                    with progress_area.container():
+                        render_workflow_progress(last_node or "", current_state)
+
+                    log(f"[{kind}] {json.dumps(payload, default=str)[:1200]}")
+
+                elif kind == "final":
+                    out = payload
+                    st.session_state["last_out"] = out
+                    status.update(label="✅ Article Generation Complete!", state="complete", expanded=False)
+                    log("[final] Pipeline execution successfully finished.")
+
+        # Render Newly Generated Results Workspace
+        out = st.session_state.get("last_out")
+        if out:
+            st.divider()
+            render_article_workspace(out, is_history=False)

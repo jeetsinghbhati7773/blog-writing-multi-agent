@@ -36,29 +36,104 @@ try:
 except Exception:
     pass
 
-def get_llm() -> ChatGroq:
+def get_llm():
     """
-    Returns a ChatGroq LLM instance. Uses a dummy key fallback during initial Streamlit Cloud
-    deployment imports to prevent groq.GroqError crash before keys are set.
+    Returns an LLM instance (ChatGroq or ChatOpenAI fallback).
+    Supports GROQ_MODEL environment variable override.
     """
-    api_key = os.getenv("GROQ_API_KEY")
-    if not api_key:
+    groq_key = os.getenv("GROQ_API_KEY")
+    openai_key = os.getenv("OPENAI_API_KEY")
+
+    if not groq_key:
         try:
             import streamlit as st
-            api_key = st.secrets.get("GROQ_API_KEY")
+            groq_key = st.secrets.get("GROQ_API_KEY")
+            openai_key = openai_key or st.secrets.get("OPENAI_API_KEY")
         except Exception:
             pass
-    if not api_key:
-        api_key = "dummy_groq_key_to_prevent_deployment_import_crash"
 
-    return ChatGroq(
-        model="llama-3.3-70b-versatile",
-        groq_api_key=api_key,
-        max_retries=10,
-    )
+    if groq_key:
+        model_name = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
+        return ChatGroq(
+            model=model_name,
+            groq_api_key=groq_key,
+            max_retries=5,
+        )
+    elif openai_key:
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(
+            model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+            api_key=openai_key,
+            max_retries=5,
+        )
+    else:
+        return ChatGroq(
+            model="openai/gpt-oss-120b",
+            groq_api_key="dummy_groq_key_to_prevent_deployment_import_crash",
+            max_retries=5,
+        )
 
-# Module-level LLM instance for node functions
-llm = get_llm()
+class LazyLLM:
+    """Lazy proxy wrapper to avoid instantiating LLM at module import time."""
+    _instance = None
+
+    def __getattr__(self, name: str):
+        if LazyLLM._instance is None:
+            LazyLLM._instance = get_llm()
+        return getattr(LazyLLM._instance, name)
+
+    def invoke(self, *args, **kwargs):
+        if LazyLLM._instance is None:
+            LazyLLM._instance = get_llm()
+        return LazyLLM._instance.invoke(*args, **kwargs)
+
+    def with_structured_output(self, *args, **kwargs):
+        return get_llm().with_structured_output(*args, **kwargs)
+
+
+# Module-level lazy LLM instance for node functions
+llm = LazyLLM()
+
+
+def invoke_with_retry(llm_instance, messages, max_retries=5, initial_delay=5.0):
+    """
+    Executes LLM invocation with automatic exponential backoff for rate limits (Groq 429 / TPM limits).
+    """
+    for attempt in range(max_retries):
+        try:
+            return llm_instance.invoke(messages)
+        except Exception as e:
+            err_str = str(e).lower()
+            if "rate" in err_str or "429" in err_str or "limit" in err_str or "quota" in err_str or "tpm" in err_str:
+                if attempt == max_retries - 1:
+                    raise
+                wait_time = initial_delay * (2 ** attempt) + (attempt * 2.0)
+                time.sleep(wait_time)
+            else:
+                raise
+
+
+def structured_with_retry(schema_cls, messages, max_retries=5, initial_delay=5.0):
+    """
+    Executes LLM structured output with automatic exponential backoff for rate limits.
+    """
+    for attempt in range(max_retries):
+        try:
+            target_llm = get_llm()
+            try:
+                runnable = target_llm.with_structured_output(schema_cls)
+            except Exception:
+                runnable = target_llm.with_structured_output(schema_cls, method="json_mode")
+            return runnable.invoke(messages)
+        except Exception as e:
+            err_str = str(e).lower()
+            if "rate" in err_str or "429" in err_str or "limit" in err_str or "quota" in err_str or "tpm" in err_str:
+                if attempt == max_retries - 1:
+                    raise
+                wait_time = initial_delay * (2 ** attempt) + (attempt * 2.0)
+                time.sleep(wait_time)
+            else:
+                raise
 
 
 # -----------------------------
@@ -79,12 +154,12 @@ If needs_research=true:
 """
 
 def router_node(state: State) -> dict:
-    decider = get_llm().with_structured_output(RouterDecision)
-    decision = decider.invoke(
+    decision = structured_with_retry(
+        RouterDecision,
         [
             SystemMessage(content=ROUTER_SYSTEM),
             HumanMessage(content=f"Topic: {state['topic']}\nAs-of date: {state['as_of']}"),
-        ]
+        ],
     )
 
     if decision.mode == "open_book":
@@ -165,8 +240,8 @@ def research_node(state: State) -> dict:
         for item in raw[:15]
     ]
 
-    extractor = get_llm().with_structured_output(EvidencePack)
-    pack = extractor.invoke(
+    pack = structured_with_retry(
+        EvidencePack,
         [
             SystemMessage(content=RESEARCH_SYSTEM),
             HumanMessage(
@@ -176,7 +251,7 @@ def research_node(state: State) -> dict:
                     f"Raw results:\n{trimmed_raw}"
                 )
             ),
-        ]
+        ],
     )
 
     dedup = {}
@@ -220,13 +295,13 @@ Output must match Plan schema.
 """
 
 def orchestrator_node(state: State) -> dict:
-    planner = get_llm().with_structured_output(Plan)
     mode = state.get("mode", "closed_book")
     evidence = state.get("evidence", [])
 
     forced_kind = "news_roundup" if mode == "open_book" else None
 
-    plan = planner.invoke(
+    plan = structured_with_retry(
+        Plan,
         [
             SystemMessage(content=ORCH_SYSTEM),
             HumanMessage(
@@ -235,10 +310,10 @@ def orchestrator_node(state: State) -> dict:
                     f"Mode: {mode}\n"
                     f"As-of: {state['as_of']} (recency_days={state['recency_days']})\n"
                     f"{'Force blog_kind=news_roundup' if forced_kind else ''}\n\n"
-                    f"Evidence:\n{[e.model_dump() for e in evidence][:10]}"
+                    f"Evidence:\n{[e.model_dump() for e in evidence][:8]}"
                 )
             ),
-        ]
+        ],
     )
     if forced_kind:
         plan.blog_kind = "news_roundup"
@@ -298,14 +373,16 @@ def worker_node(payload: dict) -> dict:
 
     bullets_text = "\n- " + "\n- ".join(task.bullets)
     evidence_text = "\n".join(
-        f"- {e.title} | {e.url} | {e.published_at or 'date:unknown'}"
-        for e in evidence[:10]
+        f"- {e.title} | {e.url}"
+        for e in evidence[:5]
     )
 
-    # Stagger parallel worker requests slightly to avoid Groq rate limit burst spikes
-    time.sleep(1.5)
+    # Stagger parallel worker requests dynamically to avoid Groq rate limit TPM burst spikes
+    task_id_val = int(task.id) if str(task.id).isdigit() else 1
+    time.sleep(2.0 * ((task_id_val - 1) % 4) + 1.0)
 
-    section_md = get_llm().invoke(
+    response = invoke_with_retry(
+        get_llm(),
         [
             SystemMessage(content=WORKER_SYSTEM),
             HumanMessage(
@@ -329,8 +406,9 @@ def worker_node(payload: dict) -> dict:
                     f"Evidence (ONLY cite these URLs):\n{evidence_text}\n"
                 )
             ),
-        ]
-    ).content.strip()
+        ],
+    )
+    section_md = response.content.strip()
 
     return {"sections": [(task.id, section_md)]}
 
@@ -361,12 +439,12 @@ Return strictly GlobalImagePlan.
 """
 
 def decide_images(state: State) -> dict:
-    planner = get_llm().with_structured_output(GlobalImagePlan)
     merged_md = state["merged_md"]
     plan = state["plan"]
     assert plan is not None
 
-    image_plan = planner.invoke(
+    image_plan = structured_with_retry(
+        GlobalImagePlan,
         [
             SystemMessage(content=DECIDE_IMAGES_SYSTEM),
             HumanMessage(

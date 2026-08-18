@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Generator
 
-from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, BaseMessage
 from src.agent.nodes import get_llm
 from src.rag.vectorstore import ChromaVectorStore
 
@@ -22,16 +22,36 @@ def format_source_label(meta: Dict[str, Any]) -> str:
 class DocumentRetriever:
     """
     Retriever module for performing similarity queries and generating grounded answers using ChromaDB context.
+    Supports multi-turn chat history and dynamic modes (Strict Document RAG vs Hybrid RAG).
     """
 
     def __init__(self, vectorstore: Optional[ChromaVectorStore] = None):
         self.vectorstore = vectorstore or ChromaVectorStore()
 
-    def retrieve_relevant_chunks(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
+    def build_search_query(self, query: str, chat_history: Optional[List[Dict[str, str]]] = None) -> str:
+        """
+        Builds a search query incorporating recent conversation turn context for accurate vector retrieval.
+        """
+        if not chat_history:
+            return query.strip()
+
+        # Look at recent user messages to enrich context if query is short or reference-based
+        recent_user_msgs = [
+            msg["content"] for msg in chat_history[-4:] if msg.get("role") == "user"
+        ]
+        if len(query.split()) < 5 and recent_user_msgs:
+            context_snippet = " ".join(recent_user_msgs[-2:])
+            return f"{query} ({context_snippet})"
+        return query.strip()
+
+    def retrieve_relevant_chunks(
+        self, query: str, k: int = 5, chat_history: Optional[List[Dict[str, str]]] = None
+    ) -> List[Dict[str, Any]]:
         """
         Retrieves top k relevant document chunks from ChromaDB for the given query.
         """
-        return self.vectorstore.query(query, n_results=k)
+        search_query = self.build_search_query(query, chat_history)
+        return self.vectorstore.query(search_query, n_results=k)
 
     def format_sources(self, chunks: List[Dict[str, Any]]) -> List[str]:
         """
@@ -47,49 +67,99 @@ class DocumentRetriever:
                 sources.append(label)
         return sources
 
-    def answer_question(self, query: str, k: int = 5) -> Tuple[str, List[str], List[Dict[str, Any]]]:
+    def build_prompt_messages(
+        self,
+        query: str,
+        chat_history: List[Dict[str, str]],
+        chunks: List[Dict[str, Any]],
+        mode: str = "hybrid",
+    ) -> List[BaseMessage]:
         """
-        Answers a user question based strictly on retrieved document chunks.
+        Builds LangChain message history including system prompt, document context, and chat history.
+        """
+        sources = self.format_sources(chunks)
+        has_docs = len(chunks) > 0
+
+        context_blocks = []
+        for c in chunks:
+            meta = c.get("metadata", {})
+            src_label = format_source_label(meta)
+            context_blocks.append(f"[{src_label}]\n{c['content']}")
+        context_str = "\n\n---\n\n".join(context_blocks) if context_blocks else "No relevant uploaded documents found."
+
+        if mode == "strict":
+            system_prompt = (
+                "You are a strict, helpful AI technical assistant answering questions based on user-uploaded documents.\n\n"
+                "CRITICAL INSTRUCTIONS:\n"
+                "- Answer the user's prompt strictly based on the provided Document Context below and prior conversation turns.\n"
+                "- Do NOT introduce outside facts or invent details not present in the context.\n"
+                "- If the provided context does not contain enough information, clearly state:\n"
+                '  "The uploaded documents do not contain enough information to answer this question."\n'
+                "- Be concise, clear, accurate, and provide direct answers.\n\n"
+                f"DOCUMENT CONTEXT:\n{context_str}"
+            )
+        elif mode == "hybrid":
+            system_prompt = (
+                "You are an expert AI technical assistant with access to both uploaded document context and general domain knowledge.\n\n"
+                "INSTRUCTIONS:\n"
+                "- Prioritize facts from the provided Document Context when answering.\n"
+                "- If uploaded documents are available and relevant, cite them naturally.\n"
+                "- You may supplement with general AI technical knowledge if the documents do not cover the full topic, but explicitly clarify what comes from uploaded files vs general knowledge.\n"
+                "- Maintain high technical accuracy and clear structure.\n\n"
+                f"DOCUMENT CONTEXT:\n{context_str}"
+            )
+        else:  # "general"
+            system_prompt = (
+                "You are a helpful, expert technical AI assistant. Provide clear, accurate, structured, and insightful answers."
+            )
+
+        messages: List[BaseMessage] = [SystemMessage(content=system_prompt)]
+
+        # Append previous conversation turns (up to last 10 turns to stay within context limits)
+        for msg in chat_history[-10:]:
+            role = msg.get("role")
+            content = msg.get("content", "")
+            if role == "user":
+                messages.append(HumanMessage(content=content))
+            elif role == "assistant":
+                messages.append(AIMessage(content=content))
+
+        # Append current user prompt if not already last in history
+        if not chat_history or chat_history[-1].get("content") != query or chat_history[-1].get("role") != "user":
+            messages.append(HumanMessage(content=query))
+
+        return messages
+
+    def answer_question(
+        self,
+        query: str,
+        k: int = 5,
+        chat_history: Optional[List[Dict[str, str]]] = None,
+        mode: str = "strict",
+    ) -> Tuple[str, List[str], List[Dict[str, Any]]]:
+        """
+        Answers a user question based on document chunks and chat history.
         Returns (answer_text, formatted_sources_list, raw_retrieved_chunks).
         """
-        chunks = self.retrieve_relevant_chunks(query, k=k)
+        history = chat_history or []
+        chunks = self.retrieve_relevant_chunks(query, k=k, chat_history=history)
         sources = self.format_sources(chunks)
 
-        if not chunks:
+        if mode == "strict" and not chunks:
             return (
                 "The uploaded documents do not contain enough information to answer this question. (No documents uploaded or no relevant matches found in memory).",
                 [],
                 [],
             )
 
-        context_blocks = []
-        for i, c in enumerate(chunks):
-            meta = c.get("metadata", {})
-            src_label = format_source_label(meta)
-            context_blocks.append(f"[{src_label}]\n{c['content']}")
-
-        context_str = "\n\n---\n\n".join(context_blocks)
-
-        system_prompt = """You are a strict, helpful AI assistant answering questions about user-uploaded documents.
-
-CRITICAL INSTRUCTIONS:
-- Base your answer STRICTLY on the provided Document Context below.
-- Do NOT introduce outside facts or invent document details not found in the context.
-- If the provided context does not contain enough information to answer the question, clearly state:
-  "The uploaded documents do not contain enough information to answer this question."
-- Be concise, clear, accurate, and directly address the user's prompt.
-"""
-
-        user_prompt = f"Document Context:\n{context_str}\n\nUser Question: {query}"
+        messages = self.build_prompt_messages(query, history, chunks, mode=mode)
 
         try:
             llm = get_llm()
-            response = llm.invoke([
-                SystemMessage(content=system_prompt),
-                HumanMessage(content=user_prompt),
-            ])
-            answer = response.content.strip()
+            response = llm.invoke(messages)
+            answer = str(response.content).strip()
         except Exception as e:
             answer = f"Error generating answer from LLM: {e}"
 
         return answer, sources, chunks
+

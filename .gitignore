@@ -1,4 +1,6 @@
-# Python & Virtual Environment
+# ==========================================
+# 🐍 Python & Virtual Environments
+# ==========================================
 venv/
 .venv/
 env/
@@ -9,31 +11,54 @@ __pycache__/
 *.so
 .pytest_cache/
 .coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
 
-# Environment & API Keys (DO NOT COMMIT SECRETS)
+# ==========================================
+# 🔑 Environment & Secrets (DO NOT COMMIT)
+# ==========================================
 .env
 .env.local
 .env.*.local
+*.pem
+*.key
 
-# Jupyter Notebook Checkpoints & Cache
-.ipynb_checkpoints/
-*.ipynb_checkpoints
+# ==========================================
+# 🗄 Vector Databases & SQLite Storage
+# ==========================================
+chroma_db/
+test_db/
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.sqlite-wal
 
-# Streamlit Cache
+# ==========================================
+# 🎨 Generated Articles & Image Outputs
+# ==========================================
+outputs/*
+!outputs/.gitkeep
+images/*
+!images/.gitkeep
+
+# ==========================================
+# 🎈 Streamlit & Temporary Cache
+# ==========================================
 .streamlit/cache/
-
-# Log & Temporary Files
+.streamlit/secrets.toml
 *.log
 *.tmp
+*.temp
 *.zip
+scratch/
 
-# OS & IDE Settings
+# ==========================================
+# 💻 OS & IDE Settings
+# ==========================================
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
-
-# Vector Database Storage
-chroma_db/
-test_db/
-
+desktop.ini

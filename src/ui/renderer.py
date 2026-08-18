@@ -16,11 +16,11 @@ def resolve_image_path(src: str) -> Path:
 
 def render_markdown_with_local_images(md: str):
     """
-    Renders markdown text into Streamlit while dynamically resolving and displaying local image files.
+    Renders markdown text inside a centered 850px reading container with responsive local image resolution.
     """
     matches = list(_MD_IMG_RE.finditer(md))
     if not matches:
-        st.markdown(md, unsafe_allow_html=False)
+        st.markdown(f'<div class="article-reader">{md}</div>', unsafe_allow_html=True)
         return
 
     parts: List[Tuple[str, str]] = []
@@ -63,14 +63,14 @@ def render_markdown_with_local_images(md: str):
 
         if src.startswith("http://") or src.startswith("https://"):
             try:
-                st.image(src, caption=caption or (alt or None), width=380)
-            except Exception as e:
+                st.image(src, caption=caption or (alt or None), use_container_width=True)
+            except Exception:
                 st.caption(f"🖼️ *Image URL:* [{alt or 'View Image'}]({src})")
         else:
             img_path = resolve_image_path(src)
             if img_path.exists():
                 try:
-                    st.image(str(img_path), caption=caption or (alt or None), width=380)
+                    st.image(str(img_path), caption=caption or (alt or None), use_container_width=True)
                 except Exception:
                     st.info(f"🖼️ **Diagram / Image Placeholder:** {caption or alt or 'Technical Diagram'}")
             else:
