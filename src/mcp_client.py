@@ -1,30 +1,52 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 import threading
 from typing import List, Dict, Any, Optional
 
 import requests
 from langchain_core.tools import tool, BaseTool
 
+logger = logging.getLogger(__name__)
+
 try:
     from langchain_community.tools import DuckDuckGoSearchRun
     search_tool = DuckDuckGoSearchRun(region="us-en")
-except Exception:
+except Exception as e:
+    logger.warning("DuckDuckGo search tool unavailable: %s", e)
     search_tool = None
 
 
 @tool
 def get_stock_price(symbol: str) -> dict:
     """
-    Fetch latest stock price for a given symbol (e.g. 'AAPL', 'TSLA') 
-    using Alpha Vantage with API key in the URL.
+    Fetch latest stock price for a given symbol (e.g. 'AAPL', 'TSLA')
+    using Alpha Vantage. The API key is read from the ALPHA_VANTAGE_API_KEY
+    environment variable (falls back to Alpha Vantage's public "demo" key,
+    which only works for a few sample symbols like 'IBM').
     """
-    url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={symbol}&apikey=C9PE94QUEW9VWGFM"
+    api_key = os.getenv("ALPHA_VANTAGE_API_KEY", "demo")
+    url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={symbol}&apikey={api_key}"
     try:
         r = requests.get(url, timeout=10)
-        return r.json()
+        data = r.json()
+        # Alpha Vantage returns 200 with a "Note"/"Information" message on
+        # rate-limit or missing/invalid key rather than an HTTP error.
+        if isinstance(data, dict) and not data.get("Global Quote") and (
+            data.get("Note") or data.get("Information") or data.get("Error Message")
+        ):
+            return {
+                "error": (
+                    "Alpha Vantage did not return a quote (rate limit reached or "
+                    "API key missing/invalid). Set ALPHA_VANTAGE_API_KEY in your .env."
+                ),
+                "raw": data,
+            }
+        return data
     except Exception as e:
+        logger.warning("Stock price lookup failed for %r: %s", symbol, e)
         return {"error": str(e)}
 
 
@@ -51,7 +73,7 @@ def submit_async_task(coro):
 DEFAULT_MCP_SERVERS = {
     "expense": {
         "transport": "streamable_http",
-        "url": "https://splendid-gold-dingo.fastmcp.app/mcp",
+        "url": os.getenv("FASTMCP_URL", os.getenv("MCP_EXPENSE_URL", "https://splendid-gold-dingo.fastmcp.app/mcp")),
     }
 }
 
@@ -64,8 +86,12 @@ def load_mcp_tools(server_config: Optional[Dict[str, Any]] = None) -> List[BaseT
     try:
         from langchain_mcp_adapters.client import MultiServerMCPClient
         config = server_config or DEFAULT_MCP_SERVERS
-        client = MultiServerMCPClient(config)
-        raw_tools = run_async(client.get_tools())
+        
+        async def _fetch_mcp_tools():
+            client = MultiServerMCPClient(config)
+            return await client.get_tools()
+
+        raw_tools = run_async(_fetch_mcp_tools())
 
         wrapped_tools = []
         for t in raw_tools:
@@ -75,7 +101,7 @@ def load_mcp_tools(server_config: Optional[Dict[str, Any]] = None) -> List[BaseT
             wrapped_tools.append(t)
         return wrapped_tools
     except Exception as e:
-        print(f"Warning: Could not load MCP tools: {e}")
+        logger.warning("Could not load MCP tools: %s", e)
         return []
 
 
@@ -102,6 +128,7 @@ def execute_tool(tool_obj: BaseTool, args: dict) -> Any:
     """
     try:
         return tool_obj.invoke(args)
-    except Exception:
+    except Exception as e:
+        logger.debug("Sync tool invoke failed (%s); retrying via async ainvoke", e)
         return run_async(tool_obj.ainvoke(args))
 

@@ -5,22 +5,43 @@ from pathlib import Path
 from typing import List, Tuple
 import streamlit as st
 
+from src.paths import PROJECT_ROOT
+
 _MD_IMG_RE = re.compile(r"!\[(?P<alt>[^\]]*)\]\((?P<src>[^)]+)\)")
 _CAPTION_LINE_RE = re.compile(r"^\*(?P<cap>.+)\*$")
 
 
 def resolve_image_path(src: str) -> Path:
+    """Resolve a local markdown image link to an absolute path.
+
+    Relative links (e.g. ``images/<slug>/file.png``) are resolved against the
+    PROJECT ROOT rather than the current working directory, so images render
+    correctly no matter where the app was launched from.
+    """
     src = src.strip().lstrip("./")
-    return Path(src).resolve()
+    p = Path(src)
+    if p.is_absolute():
+        return p.resolve()
+    return (PROJECT_ROOT / p).resolve()
 
 
 def render_markdown_with_local_images(md: str):
     """
-    Renders markdown text inside a centered 850px reading container with responsive local image resolution.
+    Renders markdown text, resolving any local image links to absolute paths.
+
+    Markdown is always rendered through Streamlit's Markdown parser (never
+    wrapped in a raw HTML block), so headings, bold, lists and code fences
+    display correctly for both freshly generated and saved/past articles.
     """
     matches = list(_MD_IMG_RE.finditer(md))
     if not matches:
-        st.markdown(f'<div class="article-reader">{md}</div>', unsafe_allow_html=True)
+        # Render as real Markdown. Wrapping the whole document in a raw
+        # <div> with unsafe_allow_html=True turns it into an HTML block, so
+        # Streamlit stops parsing the Markdown inside it and headings, bold,
+        # lists and code fences show up as literal text. That is what made
+        # saved / past articles "load but not display properly" when opened
+        # from history. Rendering the string directly parses it as Markdown.
+        st.markdown(md)
         return
 
     parts: List[Tuple[str, str]] = []

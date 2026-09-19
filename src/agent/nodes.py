@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 import time
@@ -24,8 +25,12 @@ from src.agent.tools import (
     gemini_generate_image_bytes,
     safe_slug,
 )
+from src.agent.rate_limiter import groq_rate_limiter
+from src.paths import OUTPUTS_DIR, IMAGES_DIR, PROJECT_ROOT, ensure_dir
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 # Sync Streamlit Cloud secrets to os.environ if available
 try:
@@ -33,8 +38,8 @@ try:
     for k in ["GROQ_API_KEY", "OPENAI_API_KEY", "TAVILY_API_KEY", "POLLINATIONS_API_KEY", "GOOGLE_API_KEY", "LANGCHAIN_API_KEY", "LANGCHAIN_TRACING_V2", "LANGCHAIN_PROJECT"]:
         if k in st.secrets and k not in os.environ:
             os.environ[k] = str(st.secrets[k])
-except Exception:
-    pass
+except Exception as e:
+    logger.debug("Streamlit secrets sync skipped (not running on Streamlit Cloud?): %s", e)
 
 def get_llm():
     """
@@ -49,8 +54,8 @@ def get_llm():
             import streamlit as st
             groq_key = st.secrets.get("GROQ_API_KEY")
             openai_key = openai_key or st.secrets.get("OPENAI_API_KEY")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Could not read LLM keys from Streamlit secrets: %s", e)
 
     if groq_key:
         model_name = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
@@ -67,10 +72,16 @@ def get_llm():
             max_retries=5,
         )
     else:
-        return ChatGroq(
-            model="openai/gpt-oss-120b",
-            groq_api_key="dummy_groq_key_to_prevent_deployment_import_crash",
-            max_retries=5,
+        # No key configured. Fail with a clear, actionable message instead of
+        # returning a client with a dummy key (which used to fail later with a
+        # cryptic auth error mid-generation). Safe to raise here: get_llm() is
+        # only ever called lazily (via LazyLLM) or inside node/tool functions,
+        # never at import time, so this does not crash module import/deployment.
+        raise RuntimeError(
+            "No LLM API key found. Set GROQ_API_KEY (or OPENAI_API_KEY) in your "
+            ".env file or environment before generating content. See .env.example "
+            "for the expected variables. You can get a free Groq key at "
+            "https://console.groq.com/keys."
         )
 
 class LazyLLM:
@@ -115,25 +126,38 @@ def invoke_with_retry(llm_instance, messages, max_retries=5, initial_delay=5.0):
 
 def structured_with_retry(schema_cls, messages, max_retries=5, initial_delay=5.0):
     """
-    Executes LLM structured output with automatic exponential backoff for rate limits.
+    Executes LLM structured output with automatic exponential backoff for rate limits
+    and fallback for JSON argument parsing / tool calling errors.
     """
+    last_exception = None
+    target_llm = get_llm()
+
     for attempt in range(max_retries):
         try:
-            target_llm = get_llm()
-            try:
-                runnable = target_llm.with_structured_output(schema_cls)
-            except Exception:
-                runnable = target_llm.with_structured_output(schema_cls, method="json_mode")
+            runnable = target_llm.with_structured_output(schema_cls)
             return runnable.invoke(messages)
         except Exception as e:
+            last_exception = e
             err_str = str(e).lower()
             if "rate" in err_str or "429" in err_str or "limit" in err_str or "quota" in err_str or "tpm" in err_str:
                 if attempt == max_retries - 1:
-                    raise
+                    break
                 wait_time = initial_delay * (2 ** attempt) + (attempt * 2.0)
                 time.sleep(wait_time)
+            elif any(k in err_str for k in ["parse", "tool", "json", "400", "invalid_request_error", "failed_generation"]):
+                # Tool calling format issue (e.g. Groq failing to parse JSON tool arguments)
+                break
             else:
                 raise
+
+    # Fallback to json_mode if function/tool calling failed due to syntax/formatting errors
+    try:
+        runnable = target_llm.with_structured_output(schema_cls, method="json_mode")
+        return runnable.invoke(messages)
+    except Exception as fallback_err:
+        if last_exception:
+            raise last_exception from fallback_err
+        raise fallback_err
 
 
 # -----------------------------
@@ -224,8 +248,8 @@ def research_node(state: State) -> dict:
                             source=fn,
                         )
                     )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Uploaded-document retrieval failed during research: %s", e)
 
     if not raw:
         return {"evidence": doc_evidence}
@@ -377,9 +401,11 @@ def worker_node(payload: dict) -> dict:
         for e in evidence[:5]
     )
 
-    # Stagger parallel worker requests dynamically to avoid Groq rate limit TPM burst spikes
-    task_id_val = int(task.id) if str(task.id).isdigit() else 1
-    time.sleep(2.0 * ((task_id_val - 1) % 4) + 1.0)
+    # Smooth parallel worker bursts via a shared rate limiter instead of a fixed
+    # per-task sleep. Workers run concurrently (LangGraph `Send` fanout), so this
+    # spaces the START of each Groq call by GROQ_MIN_REQUEST_INTERVAL seconds to
+    # avoid Groq TPM burst spikes, without the dead time of hard-coded staggering.
+    groq_rate_limiter.acquire()
 
     response = invoke_with_retry(
         get_llm(),
@@ -432,11 +458,72 @@ Decide if images/diagrams are needed for THIS blog.
 Rules:
 - Max 3 images total.
 - Each image must materially improve understanding (diagram/flow/architecture visual).
-- CRITICAL INLINE PLACEMENT: Insert placeholders [[IMAGE_1]], [[IMAGE_2]], [[IMAGE_3]] INLINE directly inside the relevant blog section body (after the section heading or after the explanatory paragraph).
-- DO NOT put all placeholders at the bottom or end of the document.
-- If no images needed: md_with_placeholders must equal input and images=[].
+- For each image, specify section_title (the H2 section heading where the image belongs, e.g. "WebSocket Basics").
+- Use placeholders [[IMAGE_1]], [[IMAGE_2]], [[IMAGE_3]] sequentially.
+- If no images needed: return images=[].
 Return strictly GlobalImagePlan.
 """
+
+def _insert_placeholders_into_md(merged_md: str, image_specs: List[dict]) -> str:
+    if not image_specs:
+        return merged_md
+
+    if all(spec.get("placeholder", "") in merged_md for spec in image_specs if spec.get("placeholder")):
+        return merged_md
+
+    lines = merged_md.split("\n")
+    headers_idx = [i for i, line in enumerate(lines) if line.startswith("## ")]
+
+    if not headers_idx:
+        md_out = merged_md
+        for spec in image_specs:
+            ph = spec.get("placeholder", "")
+            if ph and ph not in md_out:
+                md_out += f"\n\n{ph}\n\n"
+        return md_out
+
+    placed_placeholders = set()
+
+    # Try placement by section_title matching
+    for spec in image_specs:
+        ph = spec.get("placeholder", "")
+        if not ph or ph in merged_md:
+            placed_placeholders.add(ph)
+            continue
+
+        sec_title = spec.get("section_title") or ""
+        sec_title_clean = sec_title.lower().replace("#", "").strip()
+
+        if sec_title_clean:
+            for h_line_idx in headers_idx:
+                header_text = lines[h_line_idx].lower().replace("#", "").strip()
+                if sec_title_clean in header_text or header_text in sec_title_clean:
+                    insert_at = h_line_idx + 1
+                    while insert_at < len(lines) and lines[insert_at].strip() != "" and not lines[insert_at].startswith("#"):
+                        insert_at += 1
+                    lines.insert(insert_at, f"\n{ph}\n")
+                    placed_placeholders.add(ph)
+                    headers_idx = [i for i, l in enumerate(lines) if l.startswith("## ")]
+                    break
+
+    # Distribute any unplaced placeholders across available section headers
+    unplaced_specs = [s for s in image_specs if s.get("placeholder") and s.get("placeholder") not in placed_placeholders and s.get("placeholder") not in "\n".join(lines)]
+    if unplaced_specs:
+        num_headers = len(headers_idx)
+        for idx, spec in enumerate(unplaced_specs):
+            ph = spec["placeholder"]
+            target_h_pos = int((idx + 1) * num_headers / (len(unplaced_specs) + 1))
+            target_h_pos = max(0, min(num_headers - 1, target_h_pos))
+            h_line_idx = headers_idx[target_h_pos]
+
+            insert_at = h_line_idx + 1
+            while insert_at < len(lines) and lines[insert_at].strip() != "" and not lines[insert_at].startswith("#"):
+                insert_at += 1
+            lines.insert(insert_at, f"\n{ph}\n")
+            headers_idx = [i for i, l in enumerate(lines) if l.startswith("## ")]
+
+    return "\n".join(lines)
+
 
 def decide_images(state: State) -> dict:
     merged_md = state["merged_md"]
@@ -451,30 +538,19 @@ def decide_images(state: State) -> dict:
                 content=(
                     f"Blog kind: {plan.blog_kind}\n"
                     f"Topic: {state['topic']}\n\n"
-                    "Insert placeholders INLINE inside relevant sections + propose image prompts.\n\n"
+                    "Propose image specs (max 3) with target section titles for visual diagrams.\n\n"
                     f"{merged_md}"
                 )
             ),
         ]
     )
 
-    md_out = image_plan.md_with_placeholders
     image_specs = [img.model_dump() for img in image_plan.images]
 
-    # Post-processing: If LLM appended placeholders at the very end, move them inline after section headings
-    for spec in image_specs:
-        ph = spec["placeholder"]
-        if ph in md_out:
-            # Check if ph is near the end of the document
-            pos = md_out.rfind(ph)
-            if pos > int(len(md_out) * 0.85):
-                # Remove placeholder from end
-                md_out = md_out.replace(ph, "")
-                # Find an H2 header in the body to insert inline
-                headers = [m.start() for m in re.finditer(r"\n## ", md_out)]
-                if len(headers) >= 2:
-                    target_idx = headers[min(len(headers)-1, 1)]
-                    md_out = md_out[:target_idx] + f"\n\n{ph}\n\n" + md_out[target_idx:]
+    if image_plan.md_with_placeholders and all(s["placeholder"] in image_plan.md_with_placeholders for s in image_specs if s.get("placeholder")):
+        md_out = image_plan.md_with_placeholders
+    else:
+        md_out = _insert_placeholders_into_md(merged_md, image_specs)
 
     return {
         "md_with_placeholders": md_out,
@@ -489,9 +565,8 @@ def generate_and_place_images(state: State) -> dict:
     md = state.get("md_with_placeholders") or state["merged_md"]
     image_specs = state.get("image_specs", []) or []
 
-    # Ensure outputs directory exists
-    outputs_dir = Path("outputs")
-    outputs_dir.mkdir(exist_ok=True)
+    # Ensure outputs directory exists (anchored to the project root, not CWD)
+    outputs_dir = ensure_dir(OUTPUTS_DIR)
 
     filename_str = f"{safe_slug(plan.blog_title)}.md"
     out_file = outputs_dir / filename_str
@@ -502,7 +577,7 @@ def generate_and_place_images(state: State) -> dict:
 
     # Store images inside a topic-based subfolder under images/<topic_slug>/
     topic_slug = safe_slug(state.get("topic") or plan.blog_title)
-    topic_images_dir = Path("images") / topic_slug
+    topic_images_dir = IMAGES_DIR / topic_slug
     topic_images_dir.mkdir(parents=True, exist_ok=True)
 
     for spec in image_specs:
@@ -524,7 +599,13 @@ def generate_and_place_images(state: State) -> dict:
                 md = md.replace(placeholder, prompt_block)
                 continue
 
-        img_rel_path = f"images/{topic_slug}/{filename}"
+        # Store the link relative to the project root so the renderer (which
+        # resolves relative image links against the project root) finds the file
+        # regardless of the current working directory.
+        try:
+            img_rel_path = out_path.resolve().relative_to(PROJECT_ROOT).as_posix()
+        except ValueError:
+            img_rel_path = out_path.resolve().as_posix()
         img_md = f"![{spec['alt']}]({img_rel_path})\n*{spec['caption']}*"
         md = md.replace(placeholder, img_md)
 

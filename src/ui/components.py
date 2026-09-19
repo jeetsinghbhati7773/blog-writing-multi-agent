@@ -31,6 +31,108 @@ def render_system_status_sidebar():
         st.caption("- **Vector DB**: ✅ ChromaDB")
 
 
+def render_supabase_auth_and_chat_sidebar():
+    """
+    Renders Supabase User Authentication controls and Chat Sessions Drawer in Sidebar.
+    """
+    from src.db import login_user, signup_user, create_session, list_user_sessions, GUEST_USER_ID, GUEST_USER_EMAIL
+
+    if "user_id" not in st.session_state:
+        st.session_state["user_id"] = GUEST_USER_ID
+        st.session_state["user_email"] = GUEST_USER_EMAIL
+        st.session_state["is_logged_in"] = False
+
+    user_id = st.session_state["user_id"]
+    user_email = st.session_state.get("user_email", GUEST_USER_EMAIL)
+    is_logged_in = st.session_state.get("is_logged_in", False) and user_id != GUEST_USER_ID
+
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 👤 **User Account**")
+
+    if not is_logged_in:
+        st.sidebar.warning("🔒 **Login or Sign Up required to start chat.**")
+        with st.sidebar.expander("🔑 Login / Sign Up Form", expanded=True):
+            auth_email = st.text_input("Email", key="sidebar_auth_email")
+            auth_password = st.text_input("Password", type="password", key="sidebar_auth_password")
+            
+            c_login, c_signup = st.columns(2)
+            with c_login:
+                if st.button("Login", key="sidebar_login_btn", use_container_width=True):
+                    res = login_user(auth_email, auth_password)
+                    if res.get("success"):
+                        st.session_state["user_id"] = res["user_id"]
+                        st.session_state["user_email"] = res["email"]
+                        st.session_state["is_logged_in"] = True
+                        st.session_state["active_session_id"] = None
+                        st.success("Logged in successfully!")
+                        st.rerun()
+                    else:
+                        st.error(res.get("error", "Login failed"))
+            with c_signup:
+                if st.button("Sign Up", key="sidebar_signup_btn", use_container_width=True):
+                    res = signup_user(auth_email, auth_password)
+                    if res.get("success"):
+                        st.session_state["user_id"] = res["user_id"]
+                        st.session_state["user_email"] = res["email"]
+                        st.session_state["is_logged_in"] = True
+                        st.session_state["active_session_id"] = None
+                        st.success("Account created!")
+                        st.rerun()
+                    else:
+                        st.error(res.get("error", "Signup failed"))
+    else:
+        st.sidebar.caption(f"👤 Logged in as: `{user_email}`")
+        if st.sidebar.button("🚪 Logout", key="sidebar_logout_btn", use_container_width=True):
+            st.session_state["user_id"] = GUEST_USER_ID
+            st.session_state["user_email"] = GUEST_USER_EMAIL
+            st.session_state["is_logged_in"] = False
+            st.session_state["active_session_id"] = None
+            st.session_state["unified_messages"] = []
+            st.rerun()
+
+    # -----------------------------
+    # Chat Sessions Drawer (Multi-Chat Support)
+    # -----------------------------
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 💬 **Conversations**")
+
+    if not is_logged_in:
+        st.sidebar.caption("🔒 *Log in to view or start saved chat conversations.*")
+        return
+
+    if st.sidebar.button("➕ **New Chat**", key="btn_new_chat", use_container_width=True, type="primary"):
+        new_sess = create_session(user_id, title="New Conversation")
+        if new_sess:
+            st.session_state["active_session_id"] = new_sess["id"]
+            st.session_state["unified_messages"] = []
+            st.rerun()
+
+    # Fetch user sessions
+    user_sessions = list_user_sessions(user_id)
+    if not user_sessions:
+        st.sidebar.caption("No past conversations.")
+        if "active_session_id" not in st.session_state or not st.session_state["active_session_id"]:
+            st.session_state["active_session_id"] = "default_session"
+    else:
+        if "active_session_id" not in st.session_state or not st.session_state["active_session_id"]:
+            st.session_state["active_session_id"] = user_sessions[0]["id"]
+
+        session_map = {s["id"]: f"💬 {s.get('title', 'Chat')} ({s.get('created_at', '')[:10]})" for s in user_sessions}
+        curr_active = st.session_state.get("active_session_id")
+        
+        selected_sess_id = st.sidebar.radio(
+            "Select Session",
+            options=list(session_map.keys()),
+            format_func=lambda x: session_map.get(x, x),
+            index=list(session_map.keys()).index(curr_active) if curr_active in session_map else 0,
+            key="sb_session_radio"
+        )
+        if selected_sess_id != curr_active:
+            st.session_state["active_session_id"] = selected_sess_id
+            st.session_state["unified_messages"] = []
+            st.rerun()
+
+
 def render_system_status_popover():
     """
     Renders API system status in a compact popover drawer.
@@ -131,26 +233,32 @@ def render_workflow_progress(current_node: str, state: Dict[str, Any]):
     """
     Renders visual workflow pipeline progress indicator during graph execution.
     """
+    # These keys MUST match the actual LangGraph node names emitted while streaming
+    # (see src/agent/graph.py): router -> research -> orchestrator -> worker -> reducer.
     steps = [
-        ("plan_node", "Plan"),
-        ("research_router_node", "Research"),
-        ("research_worker_node", "Evidence"),
-        ("draft_node", "Writing"),
-        ("image_gen_node", "Visuals"),
-        ("assemble_node", "Complete"),
+        ("router", "Route"),
+        ("research", "Research"),
+        ("orchestrator", "Plan"),
+        ("worker", "Writing"),
+        ("reducer", "Assemble"),
     ]
 
     completed_nodes = state.get("_completed_nodes", [])
+    step_keys = [s[0] for s in steps]
+    current_idx = step_keys.index(current_node) if current_node in step_keys else -1
 
     st.markdown("#### **WORKFLOW PIPELINE**")
 
     cols = st.columns(len(steps))
     for idx, (node_key, label) in enumerate(steps):
-        if node_key == current_node:
+        is_current = node_key == current_node
+        is_done = (node_key in completed_nodes) or (current_idx != -1 and idx < current_idx)
+
+        if is_current:
             icon = "●"
             color = "#FF4B4B"
             status_text = f"**{label}** (In Progress)"
-        elif node_key in completed_nodes or (current_node and idx < [s[0] for s in steps].index(current_node) if current_node in [s[0] for s in steps] else False):
+        elif is_done:
             icon = "✓"
             color = "#10B981"
             status_text = f"**{label}**"

@@ -1,21 +1,43 @@
+# ---- Web app ----
 streamlit>=1.30.0
+
+# ---- Agent framework / LLM clients ----
 langgraph>=0.2.0
-langchain-openai>=0.1.0
-langchain-groq>=0.1.0
 langchain-core>=0.2.0
 langchain-community>=0.2.0
+langchain-openai>=0.1.0
+langchain-groq>=0.1.0
 pydantic>=2.0.0
+
+# ---- Data / utilities ----
 pandas>=2.0.0
+numpy>=1.24.0            # used directly by the vectorstore cosine search
 python-dotenv>=1.0.0
-google-genai>=0.1.0
-tavily-python>=0.3.0
-chromadb>=0.4.22
+supabase>=2.0.0
+psycopg2-binary>=2.9.0
+sqlalchemy>=2.0.0
+
+# ---- Document loading (RAG ingestion) ----
 pypdf>=4.0.0
 python-docx>=1.1.0
+
+# ---- Embeddings ----
+# Default embedding backend is real semantic all-MiniLM-L6-v2, which pulls in
+# torch (large). To run lean / offline without it, set EMBEDDING_PROVIDER=lightweight
+# and this dependency becomes unnecessary.
 sentence-transformers>=2.2.2
-pytest>=7.4.0
+
+# ---- Web research / tools ----
+tavily-python>=0.3.0
+ddgs>=9.0.0             # DuckDuckGo search backend (formerly the duckduckgo-search package)
+
+# ---- Image generation ----
+google-genai>=0.1.0
+
+# ---- MCP tooling ----
 langchain-mcp-adapters>=0.1.0
 mcp>=1.2.0
-duckduckgo-search>=6.0.0
-ddgs>=9.0.0
 aiosqlite>=0.20.0
+
+# ---- Testing ----
+pytest>=7.4.0

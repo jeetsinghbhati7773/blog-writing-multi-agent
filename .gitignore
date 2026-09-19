@@ -30,6 +30,8 @@ dist/
 # ==========================================
 chroma_db/
 test_db/
+chat_history.db
+*.db
 *.sqlite
 *.sqlite3
 *.sqlite-journal

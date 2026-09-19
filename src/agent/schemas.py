@@ -55,10 +55,11 @@ class ImageSpec(BaseModel):
     prompt: str = Field(..., description="Prompt to send to the image model.")
     size: Literal["1024x1024", "1024x1536", "1536x1024"] = "1024x1024"
     quality: Literal["low", "medium", "high"] = "medium"
+    section_title: Optional[str] = Field(None, description="Title of the blog section (H2) where this image should be placed.")
 
 
 class GlobalImagePlan(BaseModel):
-    md_with_placeholders: str
+    md_with_placeholders: Optional[str] = Field(None, description="Optional modified markdown text with placeholders.")
     images: List[ImageSpec] = Field(default_factory=list)
 
 

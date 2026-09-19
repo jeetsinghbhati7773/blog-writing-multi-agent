@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 import os
 import re
 from datetime import date
 from typing import List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 def tavily_search(query: str, max_results: int = 5) -> List[dict]:
@@ -28,7 +31,8 @@ def tavily_search(query: str, max_results: int = 5) -> List[dict]:
                 }
             )
         return out
-    except Exception:
+    except Exception as e:
+        logger.warning("Tavily search failed for query %r: %s", query, e)
         return []
 
 
@@ -110,8 +114,8 @@ def generate_mermaid_diagram_bytes(prompt: str) -> Optional[bytes]:
         res = requests.get(url, timeout=12)
         if res.status_code == 200 and is_valid_raster_image(res.content):
             return res.content
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("Mermaid.ink diagram render failed: %s", e)
     return None
 
 
@@ -141,8 +145,8 @@ def gemini_generate_image_bytes(prompt: str) -> bytes:
         res = requests.get(url, headers=headers, timeout=12)
         if res.status_code == 200 and is_valid_raster_image(res.content):
             return res.content
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("Pollinations image generation failed: %s", e)
 
     # 2. Try Free Mermaid.ink Technical Diagram Generator
     mermaid_bytes = generate_mermaid_diagram_bytes(prompt)
@@ -174,8 +178,8 @@ def gemini_generate_image_bytes(prompt: str) -> bytes:
                         data = inline.data
                         if is_valid_raster_image(data):
                             return data
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Gemini image generation failed: %s", e)
 
     # 4. Local Verified PNG Diagram Fallback
     return generate_png_diagram_bytes(prompt)

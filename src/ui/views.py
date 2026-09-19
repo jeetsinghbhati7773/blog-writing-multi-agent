@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 from pathlib import Path
 from typing import Any, Dict, List
@@ -24,6 +25,7 @@ from src.ui.renderer import render_markdown_with_local_images
 from src.rag.vectorstore import ChromaVectorStore
 from src.rag.loader import load_document_bytes
 from src.rag.splitter import split_documents
+from src.paths import IMAGES_DIR
 
 
 def render_plan_tab(out: Dict[str, Any]):
@@ -142,7 +144,7 @@ def render_preview_tab(out: Dict[str, Any]):
             use_container_width=True,
         )
     with col2:
-        bundle = bundle_zip(final_md, md_filename, Path("images"))
+        bundle = bundle_zip(final_md, md_filename, IMAGES_DIR)
         st.download_button(
             "📦 Download Complete Bundle (.zip)",
             data=bundle,
@@ -155,7 +157,7 @@ def render_preview_tab(out: Dict[str, Any]):
 def render_images_tab(out: Dict[str, Any]):
     st.subheader("🖼️ Diagrams & Visual Assets")
     specs = out.get("image_specs") or []
-    images_dir = Path("images")
+    images_dir = IMAGES_DIR
 
     if not specs and not images_dir.exists():
         st.info("No technical diagrams or images were generated for this post.")
@@ -311,9 +313,9 @@ def render_library_workspace():
                 st.markdown(
                     f"""
                     <div class="library-card">
-                        <h4 style="margin-bottom: 0.5rem; color: #F8FAFC;">{title}</h4>
+                        <h4 style="margin-bottom: 0.5rem; color: #F8FAFC;">{html.escape(title)}</h4>
                         <p style="font-size: 0.85rem; color: #94A3B8; margin-bottom: 1rem;">
-                            📅 {date_str} · ⏱️ {read_time} min read ({words:,} words)
+                            📅 {html.escape(str(date_str))} · ⏱️ {read_time} min read ({words:,} words)
                         </p>
                     </div>
                     """,

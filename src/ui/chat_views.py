@@ -15,6 +15,16 @@ def render_unified_chat_view():
     Renders a unified multi-turn AI Chat & PDF/Document RAG Assistant.
     Combines multi-turn conversation memory with grounded document context, source citations, and streaming responses.
     """
+    from src.db import GUEST_USER_ID
+
+    is_logged_in = st.session_state.get("is_logged_in", False)
+    user_id = st.session_state.get("user_id", GUEST_USER_ID)
+
+    if not is_logged_in or user_id == GUEST_USER_ID:
+        st.warning("🔒 **Authentication Required**: Please **Log In** or **Sign Up** in the sidebar to start a chat conversation.")
+        st.info("💡 Logging in allows your personal chat sessions, expense records, and memories to be securely stored.")
+        return
+
     st.subheader("💬 DOCUMENT INTELLIGENCE")
     st.caption("Ask questions about your uploaded knowledge base or general technical topics.")
 
@@ -92,6 +102,7 @@ def render_unified_chat_view():
         st.write("")
         if st.button("🗑️ Clear Chat History", help="Clear Chat History", use_container_width=True, key="unified_clear_chat_btn"):
             st.session_state["unified_messages"] = []
+            st.session_state["mcp_tools_cache"] = None
             st.rerun()
 
     st.divider()
@@ -103,16 +114,29 @@ def render_unified_chat_view():
     elif "General" in rag_mode:
         mode_key = "general"
 
-    # Session State Initialization
-    if "unified_messages" not in st.session_state:
-        st.session_state["unified_messages"] = []
+    # Session State Initialization & DB History Sync
+    from src.db import get_session_messages, save_message, retrieve_user_memories, GUEST_USER_ID
+    user_id = st.session_state.get("user_id", GUEST_USER_ID)
+    active_session_id = st.session_state.get("active_session_id", "default_session")
+
+    if "unified_messages" not in st.session_state or not st.session_state["unified_messages"]:
+        if active_session_id and active_session_id != "default_session":
+            db_msgs = get_session_messages(active_session_id, user_id)
+            if db_msgs:
+                st.session_state["unified_messages"] = [
+                    {"role": m["role"], "content": m["content"]} for m in db_msgs
+                ]
+            else:
+                st.session_state["unified_messages"] = []
+        else:
+            st.session_state["unified_messages"] = []
 
     # Auto-load MCP tools for General AI & Hybrid modes
     mcp_tools_list = []
     if mode_key in ("general", "hybrid"):
         try:
             from src.mcp_client import get_all_tools, run_async
-            if "mcp_tools_cache" not in st.session_state or not st.session_state["mcp_tools_cache"]:
+            if not st.session_state.get("mcp_tools_cache"):
                 st.session_state["mcp_tools_cache"] = get_all_tools()
             mcp_tools_list = st.session_state["mcp_tools_cache"]
             for t in mcp_tools_list:
@@ -147,6 +171,10 @@ def render_unified_chat_view():
         with st.chat_message("user"):
             st.markdown(prompt)
 
+        # Save user message to database
+        if active_session_id and user_id:
+            save_message(active_session_id, user_id, "user", prompt)
+
         # Retrieve relevant chunks if mode is not pure general chat
         raw_chunks = []
         sources = []
@@ -163,18 +191,33 @@ def render_unified_chat_view():
                 st.warning(answer)
             st.session_state["unified_messages"].append({"role": "user", "content": prompt})
             st.session_state["unified_messages"].append({"role": "assistant", "content": answer, "sources": [], "chunks": []})
+            if active_session_id and user_id:
+                save_message(active_session_id, user_id, "assistant", answer)
             return
 
-        # Prepare messages
+        # Prepare messages & Inject Long-Term Memory
+        from datetime import date
+        today_date_str = date.today().isoformat()
+        current_year = date.today().year
+
+        user_memories = retrieve_user_memories(user_id)
+        memory_str = "\n".join([f"- {m}" for m in user_memories]) if user_memories else "None"
+
         if mode_key == "general" and mcp_tools_list:
             tool_names_str = ", ".join([f"`{t.name}`" for t in mcp_tools_list])
             mcp_system = (
+                f"CURRENT DATE: Today's date is EXACTLY {today_date_str} (Year {current_year}).\n"
+                f"USER LONG-TERM MEMORIES:\n{memory_str}\n\n"
                 f"You are an active AI Assistant equipped with direct executable tools: {tool_names_str}.\n\n"
-                "CRITICAL INSTRUCTIONS:\n"
-                "1. If the user asks to add, record, calculate, query, web-search, or list expenses, stocks, web scores, or data, YOU MUST CALL THE APPROPRIATE TOOL FROM THE LIST ABOVE IMMEDIATELY.\n"
-                "2. ONLY call tools that are strictly present in the list above.\n"
-                "3. NEVER output spreadsheet instructions, Mint/YNAB/PocketGuard guides, SQL queries, Python scripts, Markdown tables, or DIY guides.\n"
-                "4. Keep all text responses extremely brief, direct, and concise (1-2 sentences maximum)."
+                "CRITICAL DATE RULES:\n"
+                f"1. TODAY IS {today_date_str}. All relative date phrases like 'last month', 'this month', 'today', 'yesterday', 'last week' MUST BE CALCULATED RELATIVE TO {today_date_str}.\n"
+                f"   For example, 'last one month' from {today_date_str} is start_date='2026-07-23' and end_date='2026-08-23'. NEVER use 2024 or 2025 unless the user explicitly requests a past year in their prompt.\n\n"
+                "CRITICAL INSTRUCTIONS FOR EXPENSES & ACTIONS:\n"
+                "1. If the user asks to add, record, calculate, query, web-search, summarize, or list expenses or data, YOU MUST CALL THE APPROPRIATE TOOL FROM THE LIST ABOVE IMMEDIATELY.\n"
+                "2. NEVER output text claiming an expense was added without issuing the add_expense tool call.\n"
+                "3. If the user specifies multiple expenses or actions in one request (e.g. 200 medical AND 500 shopping), YOU MUST CALL THE APPROPRIATE TOOL FOR EACH ITEM.\n"
+                "4. ONLY call tools that are strictly present in the list above.\n"
+                "5. NEVER output spreadsheet instructions, Mint/YNAB guides, SQL queries, Python scripts, or DIY guides."
             )
             messages = [SystemMessage(content=mcp_system)]
             for msg in st.session_state["unified_messages"][-10:]:
@@ -193,6 +236,17 @@ def render_unified_chat_view():
                 chunks=raw_chunks,
                 mode=mode_key,
             )
+            if mcp_tools_list and messages:
+                tool_names_str = ", ".join([f"`{t.name}`" for t in mcp_tools_list])
+                tool_instr = (
+                    f"\n\nCURRENT DATE: Today's date is EXACTLY {today_date_str} (Year {current_year}).\n"
+                    f"EXECUTABLE TOOLS AVAILABLE: {tool_names_str}.\n"
+                    f"DATE RULE: All relative date phrases ('last month', 'today', 'yesterday') MUST BE CALCULATED RELATIVE TO {today_date_str} (Year {current_year}). NEVER default to 2024.\n"
+                    "INSTRUCTION FOR TOOLS: If the user asks to add, record, calculate, query, web-search, or list expenses/stocks/data, YOU MUST INVOKE THE RELEVANT TOOL. "
+                    "If multiple items/expenses are mentioned, invoke the tool for each item."
+                )
+                if isinstance(messages[0], SystemMessage):
+                    messages[0] = SystemMessage(content=messages[0].content + tool_instr)
 
         st.session_state["unified_messages"].append({"role": "user", "content": prompt})
 
@@ -205,37 +259,89 @@ def render_unified_chat_view():
                 llm = get_llm()
                 if mcp_tools_list and mode_key in ("general", "hybrid"):
                     llm_with_tools = llm.bind_tools(mcp_tools_list)
-                    response_msg = llm_with_tools.invoke(messages)
+                    tool_map = {t.name: t for t in mcp_tools_list}
+                    tool_outputs = []
+                    
+                    max_tool_turns = 5
+                    current_turn = 0
+                    final_text = ""
 
-                    # Handle Tool Calls if any
-                    if hasattr(response_msg, "tool_calls") and response_msg.tool_calls:
-                        tool_map = {t.name: t for t in mcp_tools_list}
-                        tool_outputs = []
-                        for tc in response_msg.tool_calls:
-                            t_name = tc.get("name")
-                            t_args = tc.get("args", {})
-                            with st.status(f"🔧 Executing Tool `{t_name}`...", expanded=True) as status_box:
-                                st.write(f"**Arguments:** `{t_args}`")
-                                if t_name in tool_map:
-                                    from src.mcp_client import execute_tool
-                                    t_res = execute_tool(tool_map[t_name], t_args)
-                                    st.write(f"**Result:** `{t_res}`")
-                                    tool_outputs.append(f"Tool `{t_name}` output: {t_res}")
-                                    status_box.update(label=f"✅ Tool `{t_name}` Completed", state="complete", expanded=False)
-                                else:
-                                    status_box.update(label=f"❌ Tool `{t_name}` Not Found", state="error")
+                    from langchain_core.messages import ToolMessage
+                    from src.mcp_client import execute_tool
 
-                        # Synthesize concise 1-sentence response
-                        synthesis_prompt = (
-                            f"Tool Execution Output:\n" + "\n".join(tool_outputs) + "\n\n"
-                            f"System Instruction: Output ONLY a single, short 1-sentence confirmation of the result for user request: '{prompt}'. "
-                            f"STRICTLY FORBIDDEN: Do NOT output markdown tables, spreadsheets, Mint/YNAB guides, python scripts, step-by-step DIY guides, or unprompted follow-up options."
-                        )
-                        full_response = llm.invoke([SystemMessage(content=synthesis_prompt)]).content.strip()
-                        message_placeholder.markdown(full_response)
-                    else:
-                        full_response = response_msg.content.strip() if hasattr(response_msg, "content") else str(response_msg)
-                        message_placeholder.markdown(full_response)
+                    while current_turn < max_tool_turns:
+                        current_turn += 1
+                        response_msg = llm_with_tools.invoke(messages)
+                        messages.append(response_msg)
+
+                        if hasattr(response_msg, "tool_calls") and response_msg.tool_calls:
+                            for tc in response_msg.tool_calls:
+                                t_name = tc.get("name")
+                                t_args = tc.get("args", {})
+                                t_id = tc.get("id", "")
+
+                                status_title = {
+                                    "add_expense": "Add expense",
+                                    "list_expenses": "List expenses",
+                                    "summarize": "Summarize expenses",
+                                    "get_stock_price": "Stock price lookup",
+                                    "duckduckgo_search": "Web search",
+                                }.get(t_name, f"Tool {t_name}")
+
+                                with st.status(status_title, expanded=False) as status_box:
+                                    st.write(f"**Arguments:** `{t_args}`")
+                                    if t_name in tool_map:
+                                        t_res = execute_tool(tool_map[t_name], t_args)
+                                        st.write(f"**Result:** `{t_res}`")
+                                        tool_outputs.append(f"Tool `{t_name}` output: {t_res}")
+                                        messages.append(ToolMessage(content=str(t_res), tool_call_id=t_id))
+                                        status_box.update(label=status_title, state="complete", expanded=False)
+                                    else:
+                                        status_box.update(label=f"❌ Tool `{t_name}` Not Found", state="error")
+                        else:
+                            break
+
+                    if tool_outputs:
+                        is_expense_query = any(name in str(tool_outputs) for name in ["add_expense", "list_expenses", "summarize"])
+                        if is_expense_query:
+                            synthesis_prompt = (
+                                f"Today's date is: {today_date_str}\n"
+                                f"User Prompt: '{prompt}'\n"
+                                f"Tool Execution Output:\n" + "\n".join(tool_outputs) + "\n\n"
+                                "SYSTEM INSTRUCTION: Generate a clean, structured, friendly response matching the exact layout style below:\n\n"
+                                "1. FOR ADDING EXPENSES:\n"
+                                "   'Done! I've added your [Category] expense of Rs [Amount] for [Formatted Date]. Would you like to add any other expenses?'\n\n"
+                                "2. FOR LISTING EXPENSES:\n"
+                                "   Here are your [Month Year / Date Range] expenses:\n\n"
+                                "   Date: [Formatted Date]\n"
+                                "   Category: [Category]\n"
+                                "   Amount: Rs [Amount]\n\n"
+                                "   Total: Rs [Total Sum]\n\n"
+                                "   Would you like to add more expenses or see a summary by category?\n\n"
+                                "3. FOR SUMMARIES:\n"
+                                "   - If categories/totals exist in tool output: Present total amount and category breakdown clearly.\n"
+                                "   - If tool output is empty ([]) or count is 0: State 'No expenses found for the requested date range. Would you like to add a new expense or check a different date range?'\n\n"
+                                "4. IF TOOL OUTPUT IS EMPTY ([]) OR NO EXPENSES FOUND FOR THE DATE RANGE:\n"
+                                "   'No expenses found for the requested date range. Would you like to add a new expense or check a different date range?'\n\n"
+                                "RULES:\n"
+                                "- Use Rs / ₹ if specified in Rupees, or match user currency.\n"
+                                "- Include the friendly follow-up question at the end.\n"
+                                "- Do NOT output raw python code, markdown tables, or spreadsheets."
+                            )
+                        else:
+                            synthesis_prompt = (
+                                f"Today's date is: {today_date_str}\n"
+                                f"User Prompt: '{prompt}'\n"
+                                f"Tool Execution Output:\n" + "\n".join(tool_outputs) + "\n\n"
+                                "SYSTEM INSTRUCTION: Synthesize the tool execution output into a direct, accurate, friendly answer to the user's prompt. "
+                                "Do NOT mention expenses, budgets, date ranges, or financial templates unless explicitly asked by the user."
+                            )
+                        final_text = llm.invoke([SystemMessage(content=synthesis_prompt)]).content.strip()
+                    elif not final_text:
+                        final_text = response_msg.content.strip() if hasattr(response_msg, "content") else str(response_msg)
+
+                    full_response = final_text
+                    message_placeholder.markdown(full_response)
                 else:
                     for chunk in llm.stream(messages):
                         content = chunk.content if hasattr(chunk, "content") else str(chunk)
@@ -262,6 +368,8 @@ def render_unified_chat_view():
             "sources": sources,
             "chunks": raw_chunks,
         })
+        if active_session_id and user_id:
+            save_message(active_session_id, user_id, "assistant", full_response)
 
 
 def render_ai_chat_view():

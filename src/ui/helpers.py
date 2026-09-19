@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import logging
 import re
 import zipfile
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
+
+from src.paths import OUTPUTS_DIR
+
+logger = logging.getLogger(__name__)
 
 
 def safe_slug(title: str) -> str:
@@ -45,26 +50,41 @@ def images_zip(images_dir: Path) -> Optional[bytes]:
 
 def try_stream(graph_app, inputs: Dict[str, Any]) -> Iterator[Tuple[str, Any]]:
     """
-    Streams graph progress step by step; falls back to invoke if streaming is unsupported.
+    Streams graph progress step by step and yields the final accumulated state.
+
+    The graph is executed exactly ONCE. We stream both the per-node "updates"
+    (which drive the live progress UI) and the full "values" snapshots (whose
+    last emission is the completed final state).
+
+    NOTE: this previously streamed the graph and then called graph_app.invoke()
+    a second time to get the final output, which re-ran the entire multi-agent
+    pipeline and doubled LLM / web-search / image-generation cost and latency.
     """
+    # Preferred path: a single run emitting both progress updates and full-state snapshots.
     try:
-        for step in graph_app.stream(inputs, stream_mode="updates"):
-            yield ("updates", step)
-        out = graph_app.invoke(inputs)
-        yield ("final", out)
+        final_state: Any = None
+        for mode, chunk in graph_app.stream(inputs, stream_mode=["updates", "values"]):
+            if mode == "updates":
+                yield ("updates", chunk)
+            elif mode == "values":
+                final_state = chunk
+        yield ("final", final_state if final_state is not None else {})
         return
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Combined updates/values stream unavailable, falling back: %s", e)
 
+    # Fallback: values-only stream. The last snapshot is the final state (still a single run).
     try:
-        for step in graph_app.stream(inputs, stream_mode="values"):
-            yield ("values", step)
-        out = graph_app.invoke(inputs)
-        yield ("final", out)
+        final_state = None
+        for chunk in graph_app.stream(inputs, stream_mode="values"):
+            final_state = chunk
+            yield ("values", chunk)
+        yield ("final", final_state if final_state is not None else {})
         return
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Values-only stream unavailable, falling back to invoke: %s", e)
 
+    # Last resort: environments without streaming support.
     out = graph_app.invoke(inputs)
     yield ("final", out)
 
@@ -84,7 +104,7 @@ def list_past_blogs() -> List[Path]:
     Returns saved .md files in the outputs directory, ordered newest first.
     """
     files: List[Path] = []
-    outputs_dir = Path("outputs")
+    outputs_dir = OUTPUTS_DIR
     if outputs_dir.exists() and outputs_dir.is_dir():
         files.extend([p for p in outputs_dir.glob("*.md") if p.is_file()])
     

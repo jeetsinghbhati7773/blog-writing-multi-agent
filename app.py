@@ -213,14 +213,36 @@ with st.sidebar:
             on_click=cb_clear_chat_history,
         )
 
-    st.divider()
+    from src.ui.components import render_supabase_auth_and_chat_sidebar
+    render_supabase_auth_and_chat_sidebar()
 
     # System Status at the bottom of the sidebar as sketched in both wireframes
     render_system_status_sidebar()
 
 # -----------------------------
-# 3. Mode Router Execution
+# 3. Mode Router Execution (Enforce Global Auth Gate)
 # -----------------------------
+from src.db import GUEST_USER_ID
+
+is_logged_in = st.session_state.get("is_logged_in", False) and st.session_state.get("user_id") != GUEST_USER_ID
+
+if not is_logged_in:
+    render_studio_header(
+        title="Welcome to AI Content Studio",
+        subtitle="Please Log In or Sign Up in the sidebar to access Article Generation, AI Chat, and Knowledge Base.",
+    )
+    st.markdown("<br>", unsafe_allow_html=True)
+    c1, c2, c3 = st.columns([1, 2, 1])
+    with c2:
+        st.warning("🔒 **Authentication Required**: Access to AI Content Studio features is locked.")
+        st.info(
+            "🔑 **Getting Started**:\n\n"
+            "1. Enter your email and password in the **User Account** form in the sidebar on the left.\n"
+            "2. Click **Login** (or **Sign Up** to create a new account).\n"
+            "3. Once authenticated, your personal workspace, articles, expenses, and chat history will be unlocked!"
+        )
+    st.stop()
+
 if app_mode in ("💬 Document & AI Chat", "💬 AI Chat", "📚 Document Chat"):
     render_studio_header(
         title="Document Intelligence Chat",
