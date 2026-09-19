@@ -48,22 +48,16 @@ def images_zip(images_dir: Path) -> Optional[bytes]:
     return buf.getvalue()
 
 
-def try_stream(graph_app, inputs: Dict[str, Any]) -> Iterator[Tuple[str, Any]]:
+def try_stream(graph_app, inputs: Any, config: Optional[Dict[str, Any]] = None) -> Iterator[Tuple[str, Any]]:
     """
     Streams graph progress step by step and yields the final accumulated state.
 
-    The graph is executed exactly ONCE. We stream both the per-node "updates"
-    (which drive the live progress UI) and the full "values" snapshots (whose
-    last emission is the completed final state).
-
-    NOTE: this previously streamed the graph and then called graph_app.invoke()
-    a second time to get the final output, which re-ran the entire multi-agent
-    pipeline and doubled LLM / web-search / image-generation cost and latency.
+    The graph is executed with thread config for checkpointer support. We stream both
+    per-node "updates" and full "values" snapshots.
     """
-    # Preferred path: a single run emitting both progress updates and full-state snapshots.
     try:
         final_state: Any = None
-        for mode, chunk in graph_app.stream(inputs, stream_mode=["updates", "values"]):
+        for mode, chunk in graph_app.stream(inputs, config=config, stream_mode=["updates", "values"]):
             if mode == "updates":
                 yield ("updates", chunk)
             elif mode == "values":
@@ -73,10 +67,9 @@ def try_stream(graph_app, inputs: Dict[str, Any]) -> Iterator[Tuple[str, Any]]:
     except Exception as e:
         logger.debug("Combined updates/values stream unavailable, falling back: %s", e)
 
-    # Fallback: values-only stream. The last snapshot is the final state (still a single run).
     try:
         final_state = None
-        for chunk in graph_app.stream(inputs, stream_mode="values"):
+        for chunk in graph_app.stream(inputs, config=config, stream_mode="values"):
             final_state = chunk
             yield ("values", chunk)
         yield ("final", final_state if final_state is not None else {})
@@ -84,9 +77,9 @@ def try_stream(graph_app, inputs: Dict[str, Any]) -> Iterator[Tuple[str, Any]]:
     except Exception as e:
         logger.debug("Values-only stream unavailable, falling back to invoke: %s", e)
 
-    # Last resort: environments without streaming support.
-    out = graph_app.invoke(inputs)
+    out = graph_app.invoke(inputs, config=config)
     yield ("final", out)
+
 
 
 def extract_latest_state(current_state: Dict[str, Any], step_payload: Any) -> Dict[str, Any]:

@@ -1,10 +1,10 @@
-from __future__ import annotations
-
 import json
+import uuid
 from datetime import date
 from typing import Any, Dict, List
 
 import streamlit as st
+from langgraph.types import Command
 
 from src.agent.graph import app as graph_app
 from src.ui.theme import apply_theme
@@ -16,6 +16,7 @@ try:
         render_content_brief,
         render_workflow_progress,
         render_system_status_sidebar,
+        render_plan_approval_card,
     )
 except ImportError:
     import src.ui.components as comp_mod
@@ -25,6 +26,7 @@ except ImportError:
         render_content_brief,
         render_workflow_progress,
         render_system_status_sidebar,
+        render_plan_approval_card,
     )
 
 try:
@@ -50,7 +52,6 @@ try:
     from src.ui.views import (
         render_article_workspace,
         render_library_workspace,
-        render_knowledge_base_workspace,
     )
 except ImportError:
     import src.ui.views as views_mod
@@ -58,26 +59,14 @@ except ImportError:
     from src.ui.views import (
         render_article_workspace,
         render_library_workspace,
-        render_knowledge_base_workspace,
-    )
-
-try:
-    from src.ui.chat_views import (
-        render_unified_chat_view,
-    )
-except ImportError:
-    import src.ui.chat_views as chat_views_mod
-    importlib.reload(chat_views_mod)
-    from src.ui.chat_views import (
-        render_unified_chat_view,
     )
 
 # -----------------------------
 # 1. Streamlit Page Configuration
 # -----------------------------
 st.set_page_config(
-    page_title="AI Content Studio",
-    page_icon="🚀",
+    page_title="AI Blog Writing Agent",
+    page_icon="✍️",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -86,8 +75,16 @@ st.set_page_config(
 apply_theme()
 
 # -----------------------------
-# 2. Studio Shell Navigation (Callback Architecture)
+# 2. Session & Navigation Initialization
 # -----------------------------
+if "thread_id" not in st.session_state:
+    st.session_state["thread_id"] = str(uuid.uuid4())
+if "active_interrupt" not in st.session_state:
+    st.session_state["active_interrupt"] = None
+if "last_out" not in st.session_state:
+    st.session_state["last_out"] = None
+if "history_mode" not in st.session_state:
+    st.session_state["history_mode"] = False
 if "app_mode" not in st.session_state:
     st.session_state["app_mode"] = "📝 Article Generator"
 
@@ -97,6 +94,8 @@ def cb_nav_radio_change():
 
 
 def cb_create_new_article():
+    st.session_state["thread_id"] = str(uuid.uuid4())
+    st.session_state["active_interrupt"] = None
     st.session_state["last_out"] = None
     st.session_state["history_mode"] = False
     st.session_state["selected_past_article"] = None
@@ -112,25 +111,17 @@ def cb_select_past_article(filename: str, md_text: str):
         "final": md_text,
     }
     st.session_state["history_mode"] = True
+    st.session_state["active_interrupt"] = None
     st.session_state["loaded_blog_name"] = filename
     st.session_state["app_mode"] = "📝 Article Generator"
 
 
-def cb_new_conversation():
-    st.session_state["unified_messages"] = []
-
-
-def cb_clear_chat_history():
-    st.session_state["unified_messages"] = []
-
-
 with st.sidebar:
-    st.markdown("## **🚀 AI Content Studio**")
+    st.markdown("## **✍️ AI Blog Writing Agent**")
 
     modes_list = [
         "📝 Article Generator",
-        "💬 Document & AI Chat",
-        "🗂 Knowledge Base",
+        "📜 Past Articles Archive",
     ]
 
     if st.session_state["app_mode"] not in modes_list:
@@ -147,26 +138,22 @@ with st.sidebar:
 
     app_mode = st.session_state["app_mode"]
     st.divider()
-    
-    # -----------------------------
-    # Sidebar Section based on Sketches
-    # -----------------------------
+
     if app_mode == "📝 Article Generator":
-        # Action button (Sketch 1)
         st.button(
-            "✨ Create a new Article",
+            "✨ Create New Article",
             use_container_width=True,
             type="primary",
             key="sb_create_new_btn",
             on_click=cb_create_new_article,
         )
 
-        st.markdown("#### **📜 Past / History**")
+        st.markdown("#### **📜 Recent Articles**")
         past_files = list_past_blogs()
         if not past_files:
             st.caption("No saved articles found.")
         else:
-            with st.container(height=260):
+            with st.container(height=280):
                 for idx, p in enumerate(past_files):
                     num = len(past_files) - idx
                     try:
@@ -184,132 +171,46 @@ with st.sidebar:
                         args=(p.name, md_text),
                     )
 
-    elif app_mode == "💬 Document & AI Chat":
-        # Action button (Sketch 2)
-        st.button(
-            "💬 Start a new conversation",
-            use_container_width=True,
-            type="primary",
-            key="sb_new_chat_btn",
-            on_click=cb_new_conversation,
-        )
-
-        st.markdown("#### **📜 History**")
-        messages = st.session_state.get("unified_messages", [])
-        user_msgs = [m for m in messages if m.get("role") == "user"]
-        if not user_msgs:
-            st.caption("No active conversation turns.")
-        else:
-            with st.container(height=240):
-                for idx, m in enumerate(user_msgs):
-                    cnt = m["content"]
-                    lbl = f"{idx + 1}. {cnt[:24]}…" if len(cnt) > 24 else f"{idx + 1}. {cnt}"
-                    st.caption(lbl)
-
-        st.button(
-            "🗑️ Clear all past chat",
-            use_container_width=True,
-            key="sb_clear_chat_btn",
-            on_click=cb_clear_chat_history,
-        )
-
-    from src.ui.components import render_supabase_auth_and_chat_sidebar
-    render_supabase_auth_and_chat_sidebar()
-
-    # System Status at the bottom of the sidebar as sketched in both wireframes
+    # System Status at the bottom of the sidebar
     render_system_status_sidebar()
 
 # -----------------------------
-# 3. Mode Router Execution (Enforce Global Auth Gate)
+# 3. Main Workspace Router
 # -----------------------------
-from src.db import GUEST_USER_ID
-
-is_logged_in = st.session_state.get("is_logged_in", False) and st.session_state.get("user_id") != GUEST_USER_ID
-
-if not is_logged_in:
+if app_mode == "📜 Past Articles Archive":
     render_studio_header(
-        title="Welcome to AI Content Studio",
-        subtitle="Please Log In or Sign Up in the sidebar to access Article Generation, AI Chat, and Knowledge Base.",
+        title="Past Articles Archive",
+        subtitle="Browse and read previously generated research articles",
     )
-    st.markdown("<br>", unsafe_allow_html=True)
-    c1, c2, c3 = st.columns([1, 2, 1])
-    with c2:
-        st.warning("🔒 **Authentication Required**: Access to AI Content Studio features is locked.")
-        st.info(
-            "🔑 **Getting Started**:\n\n"
-            "1. Enter your email and password in the **User Account** form in the sidebar on the left.\n"
-            "2. Click **Login** (or **Sign Up** to create a new account).\n"
-            "3. Once authenticated, your personal workspace, articles, expenses, and chat history will be unlocked!"
-        )
-    st.stop()
-
-if app_mode in ("💬 Document & AI Chat", "💬 AI Chat", "📚 Document Chat"):
-    render_studio_header(
-        title="Document Intelligence Chat",
-        subtitle="Conversational RAG assistant grounded in your uploaded knowledge base.",
-    )
-    render_unified_chat_view()
-
-elif app_mode == "🗂 Knowledge Base":
-    render_studio_header(
-        title="Knowledge Base Storage",
-        subtitle="Manage vector database collections, documents, and chunk memory.",
-    )
-    render_knowledge_base_workspace()
+    render_library_workspace()
 
 else:
-    # Mode 1: Article Generator / Viewer
-    if "last_out" not in st.session_state:
-        st.session_state["last_out"] = None
-    if "history_mode" not in st.session_state:
-        st.session_state["history_mode"] = False
-
+    # Article Generator Mode
     is_history = st.session_state.get("history_mode", False)
     out = st.session_state.get("last_out")
     loaded_name = st.session_state.get("loaded_blog_name", "")
 
     if is_history and out:
-        # Dedicated Past Article Viewer Mode
         render_studio_header(
             title="Past Article Viewer",
             subtitle=f"Viewing saved technical article from archive: {loaded_name}",
         )
         render_article_workspace(out, is_history=True, blog_name=loaded_name)
     else:
-        # New Article Generator Mode
-        render_studio_header()
+        render_studio_header(
+            title="AI Blog Writing Agent",
+            subtitle="Autonomous Multi-Agent Content Generation with LangGraph & Human-in-the-Loop",
+        )
 
         logs: List[str] = []
         def log(msg: str):
             logs.append(msg)
 
-        # Render Content Brief Editor
-        run_btn, brief = render_content_brief()
-
-        # Trigger Generation Workflow
-        if run_btn:
-            if not brief["topic_raw"]:
-                st.warning("Please enter a valid article topic in the Content Brief above.")
-                st.stop()
-
-            st.session_state["history_mode"] = False
-
-            inputs: Dict[str, Any] = {
-                "topic": brief["full_prompt"],
-                "mode": "",
-                "needs_research": False,
-                "queries": [],
-                "evidence": [],
-                "plan": None,
-                "as_of": brief["as_of"].isoformat() if isinstance(brief["as_of"], date) else brief["as_of"],
-                "recency_days": 7,
-                "use_uploaded_docs": brief["use_uploaded_docs"],
-                "sections": [],
-                "merged_md": "",
-                "md_with_placeholders": "",
-                "image_specs": [],
-                "final": "",
-            }
+        # Helper to execute/resume graph
+        def execute_graph(stream_input: Any):
+            thread_id = st.session_state.get("thread_id") or str(uuid.uuid4())
+            st.session_state["thread_id"] = thread_id
+            config = {"configurable": {"thread_id": thread_id}}
 
             status = st.status("🚀 Running Autonomous Multi-Agent Pipeline...", expanded=True)
             progress_area = st.empty()
@@ -317,7 +218,7 @@ else:
             current_state: Dict[str, Any] = {"_completed_nodes": []}
             last_node = None
 
-            for kind, payload in try_stream(graph_app, inputs):
+            for kind, payload in try_stream(graph_app, stream_input, config=config):
                 if kind in ("updates", "values"):
                     node_name = None
                     if isinstance(payload, dict) and len(payload) == 1 and isinstance(next(iter(payload.values())), dict):
@@ -335,14 +236,73 @@ else:
 
                     log(f"[{kind}] {json.dumps(payload, default=str)[:1200]}")
 
-                elif kind == "final":
-                    out = payload
-                    st.session_state["last_out"] = out
-                    status.update(label="✅ Article Generation Complete!", state="complete", expanded=False)
-                    log("[final] Pipeline execution successfully finished.")
+            # Inspect checkpointer snapshot to handle HITL pause vs pipeline completion
+            snapshot = graph_app.get_state(config)
+            if snapshot.next and ("plan_approval" in snapshot.next or (snapshot.tasks and any(t.interrupts for t in snapshot.tasks))):
+                st.session_state["active_interrupt"] = snapshot.tasks[0].interrupts[0].value if snapshot.tasks and snapshot.tasks[0].interrupts else snapshot.values
+                st.session_state["last_out"] = None
+                status.update(label="⏸️ Execution Paused: Human Plan Approval Required", state="running", expanded=False)
+            else:
+                st.session_state["active_interrupt"] = None
+                st.session_state["last_out"] = snapshot.values
+                status.update(label="✅ Article Generation Complete!", state="complete", expanded=False)
+
+        # Render Content Brief Editor if not actively awaiting HITL approval or viewing generated article
+        active_interrupt = st.session_state.get("active_interrupt")
+        out = st.session_state.get("last_out")
+
+        if not active_interrupt and not out:
+            run_btn, brief = render_content_brief()
+
+            if run_btn:
+                if not brief["topic_raw"]:
+                    st.warning("Please enter a valid article topic in the Content Brief above.")
+                    st.stop()
+
+                st.session_state["thread_id"] = str(uuid.uuid4())
+                st.session_state["active_interrupt"] = None
+                st.session_state["last_out"] = None
+                st.session_state["history_mode"] = False
+
+                inputs: Dict[str, Any] = {
+                    "topic": brief["full_prompt"],
+                    "audience": brief.get("audience"),
+                    "tone": brief.get("tone"),
+                    "mode": "",
+                    "needs_research": False,
+                    "queries": [],
+                    "evidence": [],
+                    "plan": None,
+                    "plan_version": 1,
+                    "approval_status": "pending",
+                    "human_approval": None,
+                    "human_feedback": None,
+                    "as_of": brief["as_of"].isoformat() if isinstance(brief["as_of"], date) else brief["as_of"],
+                    "recency_days": 7,
+                    "sections": [],
+                    "merged_md": "",
+                    "md_with_placeholders": "",
+                    "image_specs": [],
+                    "final": "",
+                    "errors": [],
+                    "retry_count": 0,
+                }
+                execute_graph(inputs)
+                st.rerun()
+
+        # Render Human-in-the-Loop Plan Approval Interface
+        active_interrupt = st.session_state.get("active_interrupt")
+        if active_interrupt and not out:
+            action, feedback = render_plan_approval_card(active_interrupt)
+            if action:
+                cmd = Command(resume={"action": action, "feedback": feedback})
+                st.session_state["active_interrupt"] = None
+                execute_graph(cmd)
+                st.rerun()
 
         # Render Newly Generated Results Workspace
         out = st.session_state.get("last_out")
         if out:
             st.divider()
             render_article_workspace(out, is_history=False)
+

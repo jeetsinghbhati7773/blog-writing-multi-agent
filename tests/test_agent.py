@@ -19,7 +19,6 @@ from src.agent.nodes import (
 )
 from src.agent.rate_limiter import RateLimiter
 from src.agent.schemas import Plan, Task, RouterDecision
-import src.mcp_client as mcp_client
 
 
 def test_insert_placeholders_into_md_with_section_title():
@@ -45,7 +44,6 @@ def test_insert_placeholders_into_md_with_section_title():
 
     result = _insert_placeholders_into_md(sample_md, image_specs)
     assert "[[IMAGE_1]]" in result
-    # Should be placed under WebSocket Basics
     ws_idx = result.find("## WebSocket Basics")
     img_idx = result.find("[[IMAGE_1]]")
     sum_idx = result.find("## Summary")
@@ -77,10 +75,6 @@ def test_insert_placeholders_into_md_fallback_even_distribution():
     assert "[[IMAGE_1]]" in result
 
 
-# ---------------------------------------------------------------------------
-# Router / routing
-# ---------------------------------------------------------------------------
-
 def test_route_next_picks_research_when_needed():
     assert route_next({"needs_research": True}) == "research"
     assert route_next({"needs_research": False}) == "orchestrator"
@@ -98,7 +92,6 @@ def test_router_node_maps_mode_to_recency(monkeypatch, mode, expected_days):
         reason="test",
         queries=["q1", "q2"],
     )
-    # Mock the structured LLM call so no network / API key is needed.
     monkeypatch.setattr(
         agent_nodes, "structured_with_retry", lambda schema, messages: decision
     )
@@ -109,10 +102,6 @@ def test_router_node_maps_mode_to_recency(monkeypatch, mode, expected_days):
     assert out["recency_days"] == expected_days
     assert out["queries"] == ["q1", "q2"]
 
-
-# ---------------------------------------------------------------------------
-# Orchestrator fanout + worker + reducer merge
-# ---------------------------------------------------------------------------
 
 def _make_plan(num_tasks: int = 3) -> Plan:
     tasks = [
@@ -140,9 +129,7 @@ def test_fanout_emits_one_send_per_task():
     }
     sends = fanout(state)
     assert len(sends) == 3
-    # Every Send targets the worker node...
     assert all(getattr(s, "node", None) == "worker" for s in sends)
-    # ...and carries exactly one task each.
     task_ids = sorted(s.arg["task"]["id"] for s in sends)
     assert task_ids == [1, 2, 3]
 
@@ -160,7 +147,6 @@ def test_worker_node_returns_single_ordered_section(monkeypatch):
         "evidence": [],
     }
 
-    # Mock the LLM + rate limiter so the test is fast, offline, and key-free.
     monkeypatch.setattr(agent_nodes, "get_llm", lambda: object())
     monkeypatch.setattr(
         agent_nodes,
@@ -177,7 +163,6 @@ def test_merge_content_orders_sections_by_id():
     plan = _make_plan(2)
     state = {
         "plan": plan,
-        # Deliberately out of order to prove sorting by task id.
         "sections": [(2, "## Second section"), (1, "## First section")],
     }
     out = merge_content(state)
@@ -186,17 +171,13 @@ def test_merge_content_orders_sections_by_id():
     assert merged.index("## First section") < merged.index("## Second section")
 
 
-# ---------------------------------------------------------------------------
-# Rate limiter
-# ---------------------------------------------------------------------------
-
 def test_rate_limiter_spaces_consecutive_acquires():
     rl = RateLimiter(min_interval=0.05)
     start = time.monotonic()
-    rl.acquire()  # first slot is immediate
-    rl.acquire()  # second slot must wait ~min_interval
+    rl.acquire()
+    rl.acquire()
     elapsed = time.monotonic() - start
-    assert elapsed >= 0.045  # allow a little scheduling slack
+    assert elapsed >= 0.045
 
 
 def test_rate_limiter_zero_interval_is_noop():
@@ -204,16 +185,10 @@ def test_rate_limiter_zero_interval_is_noop():
     assert rl.acquire() == 0.0
 
 
-# ---------------------------------------------------------------------------
-# get_llm clean error
-# ---------------------------------------------------------------------------
-
 def test_get_llm_raises_clear_error_without_key(monkeypatch):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
-    # Provide a fake streamlit whose secrets never yield a key, so the result is
-    # deterministic regardless of any local .streamlit/secrets.toml.
     fake_st = types.SimpleNamespace(
         secrets=types.SimpleNamespace(get=lambda *a, **k: None)
     )
@@ -222,10 +197,6 @@ def test_get_llm_raises_clear_error_without_key(monkeypatch):
     with pytest.raises(RuntimeError, match="No LLM API key"):
         agent_nodes.get_llm()
 
-
-# ---------------------------------------------------------------------------
-# Tools
-# ---------------------------------------------------------------------------
 
 def test_iso_to_date_parses_and_tolerates_bad_input():
     assert agent_tools.iso_to_date("2026-08-23") == date(2026, 8, 23)
@@ -243,39 +214,197 @@ def test_tavily_search_returns_empty_without_key(monkeypatch):
     assert agent_tools.tavily_search("anything") == []
 
 
-# ---------------------------------------------------------------------------
-# MCP client / stock tool
-# ---------------------------------------------------------------------------
+# ------------------------------------------------------------
+# HITL (Human-in-the-Loop) Workflow Tests
+# ------------------------------------------------------------
 
-class _FakeResp:
-    def __init__(self, payload):
-        self._payload = payload
-
-    def json(self):
-        return self._payload
+from langgraph.types import Command
+from src.agent.graph import app as test_graph_app
+from src.agent.schemas import ApprovalStatus
 
 
-def test_get_stock_price_reports_rate_limit_note(monkeypatch):
+def test_hitl_pause_after_orchestrator(monkeypatch):
+    """Verify that graph execution pauses at plan_approval node and does not run Workers automatically."""
+    mock_plan = _make_plan(2)
     monkeypatch.setattr(
-        mcp_client.requests,
-        "get",
-        lambda url, timeout=10: _FakeResp({"Note": "Thank you for using Alpha Vantage!"}),
+        agent_nodes,
+        "structured_with_retry",
+        lambda schema, messages: (
+            RouterDecision(needs_research=False, mode="closed_book", reason="test")
+            if schema == RouterDecision
+            else mock_plan
+        ),
     )
-    result = mcp_client.get_stock_price.invoke({"symbol": "IBM"})
-    assert "error" in result
-    assert "raw" in result
+
+    config = {"configurable": {"thread_id": "test_hitl_pause_1"}}
+    inputs = {
+        "topic": "Retrieval-Augmented Generation",
+        "as_of": "2026-08-23",
+        "recency_days": 7,
+        "sections": [],
+        "evidence": [],
+    }
+
+    # Stream execution
+    chunks = list(test_graph_app.stream(inputs, config=config, stream_mode="values"))
+    snapshot = test_graph_app.get_state(config)
+
+    assert snapshot.next == ("plan_approval",)
+    assert snapshot.values.get("plan") is not None
+    assert snapshot.values.get("plan").blog_title == "My Blog"
+    assert snapshot.values.get("sections") == []  # Workers have NOT executed yet!
 
 
-def test_get_stock_price_uses_demo_key_when_unset(monkeypatch):
-    captured = {}
+def test_hitl_approve_resumes_to_workers(monkeypatch):
+    """Verify approving plan transitions workflow from HITL to Workers and Reducer."""
+    mock_plan = _make_plan(2)
 
-    def fake_get(url, timeout=10):
-        captured["url"] = url
-        return _FakeResp({"Global Quote": {"05. price": "123.45"}})
+    def mock_structured(schema, messages):
+        if schema == RouterDecision:
+            return RouterDecision(needs_research=False, mode="closed_book", reason="test")
+        elif schema == Plan:
+            return mock_plan
+        elif schema == agent_nodes.GlobalImagePlan:
+            return agent_nodes.GlobalImagePlan(images=[])
+        return mock_plan
 
-    monkeypatch.delenv("ALPHA_VANTAGE_API_KEY", raising=False)
-    monkeypatch.setattr(mcp_client.requests, "get", fake_get)
+    monkeypatch.setattr(agent_nodes, "structured_with_retry", mock_structured)
+    monkeypatch.setattr(agent_nodes, "get_llm", lambda: object())
+    monkeypatch.setattr(
+        agent_nodes,
+        "invoke_with_retry",
+        lambda *a, **k: types.SimpleNamespace(content="## Section\n\nContent body."),
+    )
+    monkeypatch.setattr(agent_nodes.groq_rate_limiter, "acquire", lambda: 0.0)
 
-    result = mcp_client.get_stock_price.invoke({"symbol": "IBM"})
-    assert "apikey=demo" in captured["url"]
-    assert result.get("Global Quote", {}).get("05. price") == "123.45"
+    config = {"configurable": {"thread_id": "test_hitl_approve_1"}}
+    inputs = {
+        "topic": "Retrieval-Augmented Generation",
+        "as_of": "2026-08-23",
+        "recency_days": 7,
+        "sections": [],
+        "evidence": [],
+    }
+
+    # 1. Run until HITL pause
+    list(test_graph_app.stream(inputs, config=config))
+    snapshot1 = test_graph_app.get_state(config)
+    assert snapshot1.next == ("plan_approval",)
+
+    # 2. Resume with Approve
+    list(test_graph_app.stream(Command(resume={"action": "approve"}), config=config))
+    snapshot2 = test_graph_app.get_state(config)
+
+    assert snapshot2.next == ()  # Finished cleanly!
+    assert snapshot2.values.get("approval_status") == ApprovalStatus.APPROVED
+    assert len(snapshot2.values.get("sections")) == 2
+    assert "## Section" in snapshot2.values.get("merged_md")
+
+
+def test_hitl_request_changes_revises_plan_and_pauses_again(monkeypatch):
+    """Verify requesting changes returns control to Planner, increments version, and pauses again."""
+    plan_v1 = _make_plan(2)
+    plan_v1.blog_title = "Title V1"
+
+    plan_v2 = _make_plan(3)
+    plan_v2.blog_title = "Title V2 (Revised)"
+
+    call_count = {"plan": 0}
+
+    def mock_structured(schema, messages):
+        if schema == RouterDecision:
+            return RouterDecision(needs_research=False, mode="closed_book", reason="test")
+        elif schema == Plan:
+            call_count["plan"] += 1
+            return plan_v1 if call_count["plan"] == 1 else plan_v2
+        return plan_v1
+
+    monkeypatch.setattr(agent_nodes, "structured_with_retry", mock_structured)
+
+    config = {"configurable": {"thread_id": "test_hitl_change_req_1"}}
+    inputs = {
+        "topic": "Retrieval-Augmented Generation",
+        "as_of": "2026-08-23",
+        "recency_days": 7,
+        "sections": [],
+        "evidence": [],
+    }
+
+    # 1. Initial run -> pauses at V1
+    list(test_graph_app.stream(inputs, config=config))
+    snap1 = test_graph_app.get_state(config)
+    assert snap1.next == ("plan_approval",)
+    assert snap1.values.get("plan").blog_title == "Title V1"
+    assert snap1.values.get("plan_version") == 1
+
+    # 2. Request Changes -> returns to Orchestrator -> pauses at V2
+    list(test_graph_app.stream(Command(resume={"action": "request_changes", "feedback": "Add Vector DB section"}), config=config))
+    snap2 = test_graph_app.get_state(config)
+
+    assert snap2.next == ("plan_approval",)
+    assert snap2.values.get("plan").blog_title == "Title V2 (Revised)"
+    assert snap2.values.get("plan_version") == 2
+    assert snap2.values.get("sections") == []  # Workers STILL have not executed!
+
+
+def test_hitl_multiple_revisions_and_approved_plan_to_workers(monkeypatch):
+    """Verify multiple plan revisions (v1 -> v2 -> v3) and ensure only v3 reaches workers."""
+    plan_v1 = _make_plan(2)
+    plan_v1.blog_title = "Plan V1"
+
+    plan_v2 = _make_plan(2)
+    plan_v2.blog_title = "Plan V2"
+
+    plan_v3 = _make_plan(2)
+    plan_v3.blog_title = "Plan V3 Approved"
+
+    plans = [plan_v1, plan_v2, plan_v3]
+    call_idx = {"idx": 0}
+
+    def mock_structured(schema, messages):
+        if schema == RouterDecision:
+            return RouterDecision(needs_research=False, mode="closed_book", reason="test")
+        elif schema == Plan:
+            curr = plans[min(call_idx["idx"], 2)]
+            call_idx["idx"] += 1
+            return curr
+        elif schema == agent_nodes.GlobalImagePlan:
+            return agent_nodes.GlobalImagePlan(images=[])
+        return plan_v1
+
+    worker_received_plans = []
+
+    def mock_worker(payload):
+        worker_received_plans.append(payload["plan"]["blog_title"])
+        return {"sections": [(payload["task"]["id"], "## Section\nText")]}
+
+    monkeypatch.setattr(agent_nodes, "structured_with_retry", mock_structured)
+    monkeypatch.setattr(agent_nodes, "worker_node", mock_worker)
+
+    config = {"configurable": {"thread_id": "test_hitl_multi_rev_1"}}
+    inputs = {
+        "topic": "Retrieval-Augmented Generation",
+        "as_of": "2026-08-23",
+        "recency_days": 7,
+        "sections": [],
+        "evidence": [],
+    }
+
+    # Initial -> V1
+    list(test_graph_app.stream(inputs, config=config))
+    # Revision 1 -> V2
+    list(test_graph_app.stream(Command(resume={"action": "request_changes", "feedback": "Feedback 1"}), config=config))
+    # Revision 2 -> V3
+    list(test_graph_app.stream(Command(resume={"action": "request_changes", "feedback": "Feedback 2"}), config=config))
+
+    snap_v3 = test_graph_app.get_state(config)
+    assert snap_v3.values.get("plan").blog_title == "Plan V3 Approved"
+    assert snap_v3.values.get("plan_version") == 3
+
+    # Approve V3
+    list(test_graph_app.stream(Command(resume={"action": "approve"}), config=config))
+
+    # Workers must receive ONLY Plan V3 Approved
+    assert len(worker_received_plans) == 2
+    assert all(t == "Plan V3 Approved" for t in worker_received_plans)
+

@@ -10,6 +10,8 @@ from langchain_groq import ChatGroq
 from langchain_core.messages import SystemMessage, HumanMessage
 from dotenv import load_dotenv
 
+from langgraph.types import interrupt
+
 from src.agent.schemas import (
     State,
     Task,
@@ -18,6 +20,7 @@ from src.agent.schemas import (
     RouterDecision,
     EvidencePack,
     GlobalImagePlan,
+    ApprovalStatus,
 )
 from src.agent.tools import (
     tavily_search,
@@ -198,6 +201,8 @@ def router_node(state: State) -> dict:
         "mode": decision.mode,
         "queries": decision.queries,
         "recency_days": recency_days,
+        "plan_version": state.get("plan_version", 1),
+        "approval_status": state.get("approval_status", ApprovalStatus.PENDING),
     }
 
 
@@ -321,8 +326,32 @@ Output must match Plan schema.
 def orchestrator_node(state: State) -> dict:
     mode = state.get("mode", "closed_book")
     evidence = state.get("evidence", [])
-
     forced_kind = "news_roundup" if mode == "open_book" else None
+
+    human_feedback = state.get("human_feedback")
+    prev_plan = state.get("plan")
+    approval_status = state.get("approval_status")
+    plan_version = state.get("plan_version", 1)
+
+    feedback_prompt = ""
+    if approval_status == ApprovalStatus.CHANGES_REQUESTED or approval_status == "changes_requested":
+        if human_feedback:
+            prev_title = prev_plan.blog_title if hasattr(prev_plan, "blog_title") else (prev_plan.get("blog_title") if isinstance(prev_plan, dict) else "N/A")
+            prev_tasks = prev_plan.tasks if hasattr(prev_plan, "tasks") else (prev_plan.get("tasks", []) if isinstance(prev_plan, dict) else [])
+            feedback_prompt = (
+                f"\n\nIMPORTANT HUMAN REVIEWER FEEDBACK (Plan Revision Version {plan_version}):\n"
+                f"The human reviewer requested changes to the proposed outline:\n"
+                f"\"{human_feedback}\"\n"
+                f"Previous Plan Title: {prev_title}\n"
+                f"Previous Outline Tasks:\n{prev_tasks}\n"
+                f"Update and re-architect the plan to carefully address the human reviewer's feedback."
+            )
+    elif approval_status == ApprovalStatus.REGENERATE or approval_status == "regenerate":
+        feedback_prompt = (
+            f"\n\nIMPORTANT (Plan Regeneration Requested - Version {plan_version}):\n"
+            f"The human reviewer requested a fresh alternative plan for this topic. "
+            f"Generate an engaging alternative outline."
+        )
 
     plan = structured_with_retry(
         Plan,
@@ -335,6 +364,7 @@ def orchestrator_node(state: State) -> dict:
                     f"As-of: {state['as_of']} (recency_days={state['recency_days']})\n"
                     f"{'Force blog_kind=news_roundup' if forced_kind else ''}\n\n"
                     f"Evidence:\n{[e.model_dump() for e in evidence][:8]}"
+                    f"{feedback_prompt}"
                 )
             ),
         ],
@@ -342,12 +372,89 @@ def orchestrator_node(state: State) -> dict:
     if forced_kind:
         plan.blog_kind = "news_roundup"
 
-    return {"plan": plan}
+    return {
+        "plan": plan,
+        "plan_version": plan_version,
+        "approval_status": ApprovalStatus.PENDING,
+    }
+
+
+# -----------------------------
+# 3.5) Human-in-the-Loop Plan Approval Node
+# -----------------------------
+def plan_approval_node(state: State) -> dict:
+    """
+    Human-in-the-Loop approval node.
+    Pauses graph execution after Orchestrator generates the plan.
+    Resumes when human submits approval/feedback via Streamlit UI.
+    """
+    plan = state.get("plan")
+    plan_version = state.get("plan_version", 1)
+
+    plan_dict = plan.model_dump() if hasattr(plan, "model_dump") else plan
+
+    human_response = interrupt({
+        "plan": plan_dict,
+        "plan_version": plan_version,
+        "topic": state.get("topic"),
+        "approval_status": state.get("approval_status", ApprovalStatus.PENDING),
+        "as_of": state.get("as_of"),
+        "evidence": [e.model_dump() if hasattr(e, "model_dump") else e for e in state.get("evidence", [])],
+    })
+
+    if not isinstance(human_response, dict):
+        action = str(human_response)
+        feedback = ""
+    else:
+        action = human_response.get("action", "approve")
+        feedback = human_response.get("feedback", "")
+
+    if action == "approve":
+        return {
+            "approval_status": ApprovalStatus.APPROVED,
+            "human_approval": human_response,
+            "human_feedback": None,
+        }
+    elif action == "request_changes":
+        return {
+            "approval_status": ApprovalStatus.CHANGES_REQUESTED,
+            "human_feedback": feedback,
+            "human_approval": human_response,
+            "plan_version": plan_version + 1,
+        }
+    elif action == "regenerate":
+        return {
+            "approval_status": ApprovalStatus.REGENERATE,
+            "human_feedback": None,
+            "human_approval": human_response,
+            "plan_version": plan_version + 1,
+        }
+    else:
+        return {
+            "approval_status": ApprovalStatus.PENDING,
+        }
+
+
+def route_after_approval(state: State):
+    """
+    Conditional edge router following HITL plan approval.
+    - APPROVED -> fanout to parallel worker nodes
+    - CHANGES_REQUESTED or REGENERATE -> return to orchestrator node
+    - PENDING -> remain in plan_approval node
+    """
+    status = state.get("approval_status")
+    if status == ApprovalStatus.APPROVED or status == "approved":
+        return fanout(state)
+    elif status in (ApprovalStatus.CHANGES_REQUESTED, "changes_requested", ApprovalStatus.REGENERATE, "regenerate"):
+        return "orchestrator"
+    else:
+        return "plan_approval"
 
 
 # -----------------------------
 # 4) Fanout & Worker Node
 # -----------------------------
+
 def fanout(state: State):
     from langgraph.types import Send
     assert state["plan"] is not None

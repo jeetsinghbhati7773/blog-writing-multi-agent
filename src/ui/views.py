@@ -22,9 +22,6 @@ from src.ui.helpers import (
     safe_slug,
 )
 from src.ui.renderer import render_markdown_with_local_images
-from src.rag.vectorstore import ChromaVectorStore
-from src.rag.loader import load_document_bytes
-from src.rag.splitter import split_documents
 from src.paths import IMAGES_DIR
 
 
@@ -123,7 +120,7 @@ def render_preview_tab(out: Dict[str, Any]):
     st.markdown(
         f"""
         <div class="article-meta">
-            <strong>By AI Content Studio</strong> · {read_mins} min read · {sources_count} sources · {words_count:,} words
+            <strong>By AI Blog Writing Agent</strong> · {read_mins} min read · {sources_count} sources · {words_count:,} words
         </div>
         """,
         unsafe_allow_html=True,
@@ -242,12 +239,11 @@ def cb_open_past_article(filename: str):
 
 def render_library_workspace():
     """
-    Renders a dedicated SaaS page to view, read, and browse old/past articles.
+    Renders a dedicated page to view, read, and browse old/past articles.
     Supports dedicated full-screen article reading view with a back navigation button.
     """
     selected_file = st.session_state.get("selected_past_article")
 
-    # Mode A: If a specific past article is selected, render dedicated Article Reader view
     if selected_file:
         past_files = list_past_blogs()
         target_path = next((p for p in past_files if p.name == selected_file), None)
@@ -283,7 +279,6 @@ def render_library_workspace():
             render_preview_tab(out)
             return
 
-    # Mode B: If no article is selected, render the Past Articles Archive grid
     st.subheader("📜 Past Articles Archive")
     st.caption("Browse, read, and export your previously generated technical articles.")
 
@@ -328,90 +323,3 @@ def render_library_workspace():
                     on_click=cb_open_past_article,
                     args=(p.name,),
                 )
-
-
-def render_knowledge_base_workspace():
-    """
-    Renders dedicated Knowledge Base management view.
-    """
-    st.subheader("🗂 Knowledge Base Manager (ChromaDB)")
-    st.caption("Upload and manage PDF, TXT, MD, and DOCX documents used for grounded RAG research.")
-
-    vectorstore = ChromaVectorStore()
-
-    uploaded_files = st.file_uploader(
-        "Upload New Documents",
-        type=["pdf", "txt", "md", "docx"],
-        accept_multiple_files=True,
-        help="Supported formats: PDF, TXT, Markdown (.md), DOCX",
-        key="kb_manager_uploader",
-    )
-
-    if uploaded_files:
-        if st.button("📥 Index Uploaded Documents", type="primary", key="kb_process_btn"):
-            progress_bar = st.progress(0, text="Initializing Knowledge Base Indexing Pipeline...")
-            status_box = st.status("🚀 **Document Processing & Indexing Pipeline Active...**", expanded=True)
-
-            total_chunks = 0
-            total_pages = 0
-            processed = 0
-            num_files = len(uploaded_files)
-
-            for file_idx, f in enumerate(uploaded_files):
-                try:
-                    # 1. File Reading & Text Extraction
-                    status_box.write(f"📄 **Step 1/3 (Page & Text Extraction):** Reading file bytes and parsing pages from `{f.name}`...")
-                    progress_bar.progress(int(((file_idx * 3) + 1) / (num_files * 3) * 100), text=f"Processing {f.name}: Extracting text...")
-                    file_bytes = f.read()
-                    docs = load_document_bytes(file_bytes, f.name)
-                    file_page_count = len(docs)
-                    total_pages += file_page_count
-                    status_box.write(f"└─ ✅ Extracted **{file_page_count}** pages/sections from `{f.name}`")
-
-                    # 2. Semantic Chunking
-                    status_box.write(f"✂️ **Step 2/3 (Semantic Chunking):** Splitting document text into 1,000-character semantic chunks...")
-                    progress_bar.progress(int(((file_idx * 3) + 2) / (num_files * 3) * 100), text=f"Processing {f.name}: Creating semantic chunks...")
-                    chunks = split_documents(docs)
-                    file_chunk_count = len(chunks)
-                    status_box.write(f"└─ ✅ Generated **{file_chunk_count}** text chunks with metadata")
-
-                    # 3. Embedding Generation & VectorDB Storage
-                    status_box.write(f"🧠 **Step 3/3 (Vector Embedding & Ingestion):** Computing 384-dim dense embeddings (`all-MiniLM-L6-v2`) & saving to ChromaDB...")
-                    progress_bar.progress(int(((file_idx * 3) + 3) / (num_files * 3) * 100), text=f"Processing {f.name}: Computing embeddings & saving to vector storage...")
-                    added = vectorstore.add_documents(chunks)
-                    total_chunks += added
-                    processed += 1
-                    status_box.write(f"└─ ✅ Ingested **{added}** vector embeddings into ChromaDB storage")
-                    st.toast(f"✅ Indexed {f.name} ({added} chunks)", icon="📄")
-
-                except Exception as e:
-                    status_box.write(f"❌ **Error processing `{f.name}`:** {e}")
-                    st.error(f"Failed to process '{f.name}': {e}")
-
-            progress_bar.progress(100, text="Indexing complete!")
-            status_box.update(
-                label=f"🎉 **Knowledge Base Indexing Complete!** Processed {processed} file(s), {total_pages} total pages, and {total_chunks} vector chunks.",
-                state="complete",
-                expanded=True,
-            )
-
-            # Display visual summary metrics
-            st.divider()
-            cols = st.columns(4)
-            cols[0].metric("Files Indexed", f"{processed}/{num_files}")
-            cols[1].metric("Total Pages Extracted", f"{total_pages}")
-            cols[2].metric("Semantic Chunks Created", f"{total_chunks}")
-            cols[3].metric("Vector Embedding Model", "all-MiniLM-L6-v2")
-
-    doc_list = vectorstore.list_documents()
-    if doc_list:
-        st.markdown("#### **Indexed Knowledge Base Files**")
-        df = pd.DataFrame(doc_list)
-        st.dataframe(df, use_container_width=True, hide_index=True)
-
-        if st.button("🗑️ Clear Entire Knowledge Base", type="secondary"):
-            vectorstore.clear_documents()
-            st.toast("Cleared ChromaDB vector storage!", icon="🧹")
-            st.rerun()
-    else:
-        st.info("No documents currently indexed in ChromaDB knowledge base.")

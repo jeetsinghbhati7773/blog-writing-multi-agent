@@ -28,109 +28,6 @@ def render_system_status_sidebar():
         st.caption(f"- **Search**: {'✅ Tavily' if tavily_set else 'ℹ️ Off'}")
         st.caption(f"- **Images**: {'✅ Active' if (pollinations_set or google_set) else 'ℹ️ Off'}")
         st.caption(f"- **Tracing**: {'✅ LangSmith' if langsmith_set else 'ℹ️ Off'}")
-        st.caption("- **Vector DB**: ✅ ChromaDB")
-
-
-def render_supabase_auth_and_chat_sidebar():
-    """
-    Renders Supabase User Authentication controls and Chat Sessions Drawer in Sidebar.
-    """
-    from src.db import login_user, signup_user, create_session, list_user_sessions, GUEST_USER_ID, GUEST_USER_EMAIL
-
-    if "user_id" not in st.session_state:
-        st.session_state["user_id"] = GUEST_USER_ID
-        st.session_state["user_email"] = GUEST_USER_EMAIL
-        st.session_state["is_logged_in"] = False
-
-    user_id = st.session_state["user_id"]
-    user_email = st.session_state.get("user_email", GUEST_USER_EMAIL)
-    is_logged_in = st.session_state.get("is_logged_in", False) and user_id != GUEST_USER_ID
-
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("### 👤 **User Account**")
-
-    if not is_logged_in:
-        st.sidebar.warning("🔒 **Login or Sign Up required to start chat.**")
-        with st.sidebar.expander("🔑 Login / Sign Up Form", expanded=True):
-            auth_email = st.text_input("Email", key="sidebar_auth_email")
-            auth_password = st.text_input("Password", type="password", key="sidebar_auth_password")
-            
-            c_login, c_signup = st.columns(2)
-            with c_login:
-                if st.button("Login", key="sidebar_login_btn", use_container_width=True):
-                    res = login_user(auth_email, auth_password)
-                    if res.get("success"):
-                        st.session_state["user_id"] = res["user_id"]
-                        st.session_state["user_email"] = res["email"]
-                        st.session_state["is_logged_in"] = True
-                        st.session_state["active_session_id"] = None
-                        st.success("Logged in successfully!")
-                        st.rerun()
-                    else:
-                        st.error(res.get("error", "Login failed"))
-            with c_signup:
-                if st.button("Sign Up", key="sidebar_signup_btn", use_container_width=True):
-                    res = signup_user(auth_email, auth_password)
-                    if res.get("success"):
-                        st.session_state["user_id"] = res["user_id"]
-                        st.session_state["user_email"] = res["email"]
-                        st.session_state["is_logged_in"] = True
-                        st.session_state["active_session_id"] = None
-                        st.success("Account created!")
-                        st.rerun()
-                    else:
-                        st.error(res.get("error", "Signup failed"))
-    else:
-        st.sidebar.caption(f"👤 Logged in as: `{user_email}`")
-        if st.sidebar.button("🚪 Logout", key="sidebar_logout_btn", use_container_width=True):
-            st.session_state["user_id"] = GUEST_USER_ID
-            st.session_state["user_email"] = GUEST_USER_EMAIL
-            st.session_state["is_logged_in"] = False
-            st.session_state["active_session_id"] = None
-            st.session_state["unified_messages"] = []
-            st.rerun()
-
-    # -----------------------------
-    # Chat Sessions Drawer (Multi-Chat Support)
-    # -----------------------------
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("### 💬 **Conversations**")
-
-    if not is_logged_in:
-        st.sidebar.caption("🔒 *Log in to view or start saved chat conversations.*")
-        return
-
-    if st.sidebar.button("➕ **New Chat**", key="btn_new_chat", use_container_width=True, type="primary"):
-        new_sess = create_session(user_id, title="New Conversation")
-        if new_sess:
-            st.session_state["active_session_id"] = new_sess["id"]
-            st.session_state["unified_messages"] = []
-            st.rerun()
-
-    # Fetch user sessions
-    user_sessions = list_user_sessions(user_id)
-    if not user_sessions:
-        st.sidebar.caption("No past conversations.")
-        if "active_session_id" not in st.session_state or not st.session_state["active_session_id"]:
-            st.session_state["active_session_id"] = "default_session"
-    else:
-        if "active_session_id" not in st.session_state or not st.session_state["active_session_id"]:
-            st.session_state["active_session_id"] = user_sessions[0]["id"]
-
-        session_map = {s["id"]: f"💬 {s.get('title', 'Chat')} ({s.get('created_at', '')[:10]})" for s in user_sessions}
-        curr_active = st.session_state.get("active_session_id")
-        
-        selected_sess_id = st.sidebar.radio(
-            "Select Session",
-            options=list(session_map.keys()),
-            format_func=lambda x: session_map.get(x, x),
-            index=list(session_map.keys()).index(curr_active) if curr_active in session_map else 0,
-            key="sb_session_radio"
-        )
-        if selected_sess_id != curr_active:
-            st.session_state["active_session_id"] = selected_sess_id
-            st.session_state["unified_messages"] = []
-            st.rerun()
 
 
 def render_system_status_popover():
@@ -140,7 +37,7 @@ def render_system_status_popover():
     render_system_status_sidebar()
 
 
-def render_studio_header(title: str = "AI Content Studio", subtitle: str = "Generate research-backed technical content with multi-agent intelligence"):
+def render_studio_header(title: str = "AI Blog Writing Agent", subtitle: str = "Generate research-backed technical content with multi-agent intelligence"):
     """
     Renders top studio header.
     """
@@ -159,7 +56,7 @@ def render_content_brief() -> Tuple[bool, Dict[str, Any]]:
     with st.container():
         topic = st.text_area(
             "Article Topic / Prompt",
-            placeholder="e.g. Architecting High-Performance RAG Pipelines with Vector Search & Reranking",
+            placeholder="e.g. How Retrieval-Augmented Generation Works under the hood",
             height=90,
             key="brief_topic",
         )
@@ -192,17 +89,22 @@ def render_content_brief() -> Tuple[bool, Dict[str, Any]]:
                 key="brief_word_count",
             )
 
-        col_date, col_kb = st.columns([1, 1])
+        col_date, col_inst = st.columns([1, 1])
         with col_date:
             as_of = st.date_input("As-of Target Date", value=date.today(), key="brief_as_of")
-        with col_kb:
-            st.write("")
-            use_uploaded_docs = st.checkbox(
-                "📚 Use Knowledge Base (ChromaDB)",
-                value=True,
-                help="Includes uploaded PDFs, TXT, MD, or DOCX documents as research context.",
-                key="brief_use_kb",
+        with col_inst:
+            keywords = st.text_input(
+                "Keywords (Optional)",
+                placeholder="e.g. RAG, embeddings, vector database, retrieval",
+                key="brief_keywords",
             )
+
+        instructions = st.text_area(
+            "Additional Instructions (Optional)",
+            placeholder="e.g. Include practical code snippet or system diagram.",
+            height=60,
+            key="brief_instructions",
+        )
 
         # Construct comprehensive prompt internally
         full_topic_prompt = (
@@ -210,7 +112,9 @@ def render_content_brief() -> Tuple[bool, Dict[str, Any]]:
             f"Target Audience: {audience}\n"
             f"Tone: {tone}\n"
             f"Format: {format_kind}\n"
-            f"Target Length: {word_count}"
+            f"Target Length: {word_count}\n"
+            f"Keywords: {keywords.strip()}\n"
+            f"Special Instructions: {instructions.strip()}"
         )
 
         run_btn = st.button("🚀 Generate Technical Article", type="primary", use_container_width=True, key="brief_submit_btn")
@@ -222,8 +126,9 @@ def render_content_brief() -> Tuple[bool, Dict[str, Any]]:
             "tone": tone,
             "format": format_kind,
             "word_count": word_count,
+            "keywords": keywords.strip(),
+            "instructions": instructions.strip(),
             "as_of": as_of,
-            "use_uploaded_docs": use_uploaded_docs,
         }
 
         return run_btn, brief_data
@@ -233,12 +138,11 @@ def render_workflow_progress(current_node: str, state: Dict[str, Any]):
     """
     Renders visual workflow pipeline progress indicator during graph execution.
     """
-    # These keys MUST match the actual LangGraph node names emitted while streaming
-    # (see src/agent/graph.py): router -> research -> orchestrator -> worker -> reducer.
     steps = [
         ("router", "Route"),
         ("research", "Research"),
         ("orchestrator", "Plan"),
+        ("plan_approval", "🧑 Human Review"),
         ("worker", "Writing"),
         ("reducer", "Assemble"),
     ]
@@ -271,12 +175,113 @@ def render_workflow_progress(current_node: str, state: Dict[str, Any]):
             st.markdown(f"<div style='text-align: center; color: {color}; font-size: 1.2rem;'>{icon}</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 0.8rem; color: {color};'>{status_text}</div>", unsafe_allow_html=True)
 
-    # Progress stats summary
     evidence_count = len(state.get("evidence", []) or [])
     sections_count = len(state.get("sections", []) or [])
     images_count = len(state.get("image_specs", []) or [])
 
     st.caption(f"📊 Gathering context: `{evidence_count}` sources collected · `{sections_count}` sections written · `{images_count}` visual assets generated")
+
+
+def render_plan_approval_card(interrupt_value: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Renders Human-in-the-Loop (HITL) Plan Approval UI card.
+    Returns (action, feedback) when user acts, else (None, None).
+    """
+    st.warning("### 🧑 **PLAN APPROVAL REQUIRED**", icon="✋")
+    st.info("The multi-agent pipeline has generated the article plan. Please review and approve the outline before section generation begins.")
+
+    plan_data = interrupt_value.get("plan", {})
+    if hasattr(plan_data, "model_dump"):
+        plan_dict = plan_data.model_dump()
+    elif isinstance(plan_data, dict):
+        plan_dict = plan_data
+    else:
+        plan_dict = {}
+
+    plan_version = interrupt_value.get("plan_version", 1)
+    topic = interrupt_value.get("topic", "N/A")
+    evidence_items = interrupt_value.get("evidence", [])
+
+    st.markdown(f"#### 📄 **Article Plan (Version {plan_version})**")
+    st.markdown(f"**Title:** `{plan_dict.get('blog_title', 'Untitled')}`")
+
+    mcol1, mcol2, mcol3, mcol4 = st.columns(4)
+    mcol1.metric("Target Audience", str(plan_dict.get("audience", "General")))
+    mcol2.metric("Content Tone", str(plan_dict.get("tone", "Technical")))
+    mcol3.metric("Format", str(plan_dict.get("blog_kind", "explainer")).upper())
+    mcol4.metric("Plan Version", f"v{plan_version}")
+
+    tasks = plan_dict.get("tasks", [])
+    st.markdown("#### **Proposed Section Outline**")
+    if tasks:
+        for t in tasks:
+            t_id = t.get("id", "")
+            t_title = t.get("title", "")
+            t_goal = t.get("goal", "")
+            t_words = t.get("target_words", 0)
+            t_bullets = t.get("bullets", [])
+            t_research = "Yes" if t.get("requires_research") else "No"
+            t_code = "Yes" if t.get("requires_code") else "No"
+            t_tags = ", ".join(t.get("tags") or [])
+
+            with st.expander(f"📌 **Section {t_id}: {t_title}** (~{t_words} words)", expanded=True):
+                st.markdown(f"**Goal:** {t_goal}")
+                st.markdown("**Key Subsections & Talking Points:**")
+                for b in t_bullets:
+                    st.markdown(f"- {b}")
+                st.caption(f"Tags: `{t_tags}` | Needs Research: `{t_research}` | Code Snippet: `{t_code}`")
+
+    if evidence_items:
+        st.markdown("#### **Gathered Research Sources**")
+        with st.expander("📚 View Gathered Research Sources", expanded=False):
+            for e in evidence_items:
+                if hasattr(e, "model_dump"):
+                    e = e.model_dump()
+                st.markdown(f"- [{e.get('title')}]({e.get('url')})")
+
+    st.divider()
+    st.markdown("#### **Human Review Action**")
+
+    if "show_change_request_form" not in st.session_state:
+        st.session_state["show_change_request_form"] = False
+
+    bcol1, bcol2, bcol3 = st.columns(3)
+
+    action_selected = None
+    feedback_selected = None
+
+    with bcol1:
+        if st.button("✅ Approve Plan", type="primary", use_container_width=True, key="hitl_approve_btn"):
+            action_selected = "approve"
+            st.session_state["show_change_request_form"] = False
+
+    with bcol2:
+        if st.button("✏️ Request Changes", type="secondary", use_container_width=True, key="hitl_request_changes_btn"):
+            st.session_state["show_change_request_form"] = not st.session_state["show_change_request_form"]
+
+    with bcol3:
+        if st.button("🔄 Regenerate Plan", type="secondary", use_container_width=True, key="hitl_regenerate_btn"):
+            action_selected = "regenerate"
+            st.session_state["show_change_request_form"] = False
+
+    if st.session_state.get("show_change_request_form"):
+        st.markdown("---")
+        st.markdown("##### ✏️ **What would you like to change in the plan?**")
+        st.caption("Examples: *'Add a section explaining vector databases'*, *'Remove limitations section'*, *'Make article beginner friendly'*")
+        feedback_input = st.text_area(
+            "Change Instructions",
+            placeholder="Type your feedback/modifications for the Planner agent...",
+            key="hitl_feedback_text",
+        )
+        if st.button("📨 Submit Plan Changes", type="primary", key="hitl_submit_changes_btn"):
+            if not feedback_input.strip():
+                st.warning("Please provide modification instructions before submitting.")
+            else:
+                action_selected = "request_changes"
+                feedback_selected = feedback_input.strip()
+                st.session_state["show_change_request_form"] = False
+
+    return action_selected, feedback_selected
 
 
 def render_article_metrics(out: Dict[str, Any]):
@@ -297,3 +302,4 @@ def render_article_metrics(out: Dict[str, Any]):
     cols[1].metric("SOURCES", str(sources_count))
     cols[2].metric("SECTIONS", str(sections_count))
     cols[3].metric("VISUALS", str(visuals_count))
+

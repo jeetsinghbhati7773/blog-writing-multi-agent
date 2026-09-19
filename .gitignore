@@ -26,18 +26,6 @@ dist/
 *.key
 
 # ==========================================
-# 🗄 Vector Databases & SQLite Storage
-# ==========================================
-chroma_db/
-test_db/
-chat_history.db
-*.db
-*.sqlite
-*.sqlite3
-*.sqlite-journal
-*.sqlite-wal
-
-# ==========================================
 # 🎨 Generated Articles & Image Outputs
 # ==========================================
 outputs/*
@@ -57,8 +45,9 @@ images/*
 scratch/
 
 # ==========================================
-# 💻 OS & IDE Settings
+# 💻 Sub-Projects & IDE Settings
 # ==========================================
+rag-with-mcp/
 .vscode/
 .idea/
 .DS_Store

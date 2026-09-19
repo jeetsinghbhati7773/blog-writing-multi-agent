@@ -5,6 +5,9 @@ from typing import TypedDict, List, Optional, Literal, Annotated
 from pydantic import BaseModel, Field
 
 
+from enum import Enum
+
+
 class Task(BaseModel):
     id: int
     title: str
@@ -63,8 +66,20 @@ class GlobalImagePlan(BaseModel):
     images: List[ImageSpec] = Field(default_factory=list)
 
 
+class ApprovalStatus(str, Enum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    CHANGES_REQUESTED = "changes_requested"
+    REGENERATE = "regenerate"
+
+
 class State(TypedDict):
     topic: str
+    audience: Optional[str]
+    tone: Optional[str]
+    target_length: Optional[int]
+    keywords: Optional[List[str]]
+    instructions: Optional[str]
 
     # routing / research
     mode: str
@@ -72,6 +87,12 @@ class State(TypedDict):
     queries: List[str]
     evidence: List[EvidenceItem]
     plan: Optional[Plan]
+    plan_version: int
+
+    # HITL approval
+    approval_status: ApprovalStatus
+    human_approval: Optional[dict]
+    human_feedback: Optional[str]
 
     # recency
     as_of: str
@@ -85,8 +106,9 @@ class State(TypedDict):
     md_with_placeholders: str
     image_specs: List[dict]
 
-    # optional document rag integration
-    use_uploaded_docs: Optional[bool]
-
     final: str
+    errors: Optional[List[str]]
+    retry_count: int
+
+
 

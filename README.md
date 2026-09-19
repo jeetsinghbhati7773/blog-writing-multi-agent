@@ -1,126 +1,172 @@
-# 🚀 AI Content Studio: Multi-Agent Blog Generator + MCP Tools + Document RAG
+# AI Blog Writing Agent — Multi-Agent Content Generation with LangGraph
 
-[![Python](https://img.shields.io/badge/Python-3.11-blue.svg)](https://www.python.org/)
-[![LangGraph](https://img.shields.io/badge/LangGraph-Multi--Agent-green.svg)](https://python.langchain.com/docs/langgraph)
-[![ChromaDB](https://img.shields.io/badge/ChromaDB-Local%20Vector%20Store-yellow.svg)](https://www.trychroma.com/)
-[![MCP](https://img.shields.io/badge/MCP-FastMCP%20%26%20Tools-blueviolet.svg)](https://modelcontextprotocol.io/)
-[![Streamlit](https://img.shields.io/badge/Frontend-Streamlit-red.svg)](https://streamlit.io/)
-[![Groq](https://img.shields.io/badge/LLM-Groq%20GPT--OSS%20120B-purple.svg)](https://groq.com/)
-[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![LangGraph](https://img.shields.io/badge/LangGraph-StateGraph-orange.svg)](https://github.com/langchain-ai/langgraph)
+[![LangChain](https://img.shields.io/badge/LangChain-v0.3-green.svg)](https://www.langchain.com/)
+[![Streamlit](https://img.shields.io/badge/Streamlit-UI-red.svg)](https://streamlit.io/)
 
-A unified **AI Content Studio** combining:
-1. 📝 **Autonomous Multi-Agent Blog Generator**: Powered by **LangGraph**, **Groq** (`openai/gpt-oss-120b`), **Tavily Web Search**, exponential rate-limit retry logic, and technical diagram synthesis.
-2. 🤖 **General AI Chat + MCP Server Tools**: Interactive multi-turn assistant with built-in Model Context Protocol (MCP) server tools (`add_expense`, `list_expenses`, `summarize`), live stock prices (`get_stock_price`), and web search (`duckduckgo_search`).
-3. 📚 **Document Intelligence (RAG)**: Zero-cost local Retrieval-Augmented Generation powered by **ChromaDB** with real-time visual 3-step pipeline progress (Extraction 📄 ➔ Chunking ✂️ ➔ Embedding & Vector Ingestion 🧠).
+An autonomous, multi-agent AI system designed to research, plan, draft, assemble, edit, and generate technical diagrams for comprehensive, production-grade technical blog articles. Built with **LangGraph**, **LangChain**, **Groq LLM**, and **Tavily Web Search**.
 
 ---
 
-## ⚡ Studio Features Matrix
+## 💡 Problem Statement
 
-| Feature Mode | Core Component | Description |
-| :--- | :--- | :--- |
-| 📝 **Blog Generator** | LangGraph State Graph | Autonomous multi-agent research, planning, parallel section writing with Groq rate-limit staggering, and visual diagrams. |
-| 🤖 **General AI Chat** | Multi-Turn LLM + MCP Tools | Interactive chat automatically bound with MCP server tools (Expenses, Stocks, Web Search) with concise single-sentence action synthesis. |
-| 📚 **Strict Document RAG** | Persistent ChromaDB | Answers strictly grounded in uploaded PDF/TXT/MD/DOCX document chunks with page citations and zero external hallucination. |
-| 🔀 **Hybrid Mode** | ChromaDB + Web Evidence | Combines uploaded document context with external search & general AI technical knowledge. |
-| 🗂 **Knowledge Base Manager** | Live 3-Step RAG Pipeline | Visual progress tracking for page text extraction, 1000-char semantic chunking, and 384-dim dense vector embedding ingestion (`all-MiniLM-L6-v2`). |
+Writing deep technical blog posts requires significant manual effort: conducting web research, organizing structured outlines, drafting individual sections, ensuring smooth logical flow, avoiding repetition, and generating architecture diagrams. Single-prompt LLM generation often leads to hallucinations, repetitive prose, shallow coverage, and token context overflow on long articles.
+
+## 🚀 Solution
+
+**AI Blog Writing Agent** solves this by breaking the writing process down into a specialized graph of multi-agent state nodes:
+
+1. **Router Agent**: Dynamically evaluates the user's prompt to determine if external web research is required.
+2. **Research Agent**: Executes query fanout via Tavily, collecting structured real-time research and evidence.
+3. **Orchestrator / Planner**: Generates a granular, topic-specific article outline with section constraints and target word counts.
+4. **Parallel Worker Agents**: Uses LangGraph parallel fanout (`Send`) to concurrently write high-quality section drafts in parallel.
+5. **Reducer / Editor**: Merges individual section drafts, harmonizes transitions, eliminates redundancy, and checks tone consistency.
+6. **Visual / Diagram Agent**: Analyzes technical content to dynamically generate clean Mermaid diagrams and visual assets.
 
 ---
 
-## 📊 System Architecture & Workflow
+## 🏗 System Architecture & Workflow
 
-### Studio Navigation
 ```mermaid
-graph TD
-    User([User Navbar Selector]) --> Sidebar{Studio Navigation}
-    Sidebar -- 📝 Article Generator --> LangGraphEngine[LangGraph Multi-Agent Workflow]
-    Sidebar -- 💬 Document & AI Chat --> ChatEngine[Unified AI Chat + MCP Tools + RAG]
-    Sidebar -- 🗂 Knowledge Base --> ChromaDBManager[ChromaDB Visual Vector Manager]
-```
-
-### LangGraph Multi-Agent Blog Pipeline
-```mermaid
-graph LR
-    START([🚀 START]) --> Router[🧭 router]
-    Router -- Needs Research --> Research[🔎 research + ChromaDB Context]
-    Router -- Evergreen Topic --> Orchestrator[📋 orchestrator]
+flowchart TD
+    Start([User Input Brief]) --> Router[Router Agent]
+    
+    Router -->|Needs Web Research| Research[Research Agent - Tavily]
+    Router -->|Evergreen / Closed-Book| Orchestrator[Orchestrator / Planner]
+    
     Research --> Orchestrator
-    Orchestrator --> Worker[✍️ parallel workers + exponential backoff retry]
-    Worker --> Reducer[🧩 reducer subgraph]
-    Reducer --> END([✅ END])
+    
+    Orchestrator -->|Parallel Fanout| Worker1[Worker Agent 1: Intro]
+    Orchestrator -->|Parallel Fanout| Worker2[Worker Agent 2: Architecture]
+    Orchestrator -->|Parallel Fanout| Worker3[Worker Agent N: Implementation]
+    
+    Worker1 --> Reducer[Reducer / Editor Node]
+    Worker2 --> Reducer
+    Worker3 --> Reducer
+    
+    Reducer --> Visual[Visual & Diagram Agent]
+    Visual --> Final[Final Published Markdown & Assets]
+    Final --> End([Streamlit UI & Export])
 ```
 
 ---
 
-## 🛠️ MCP (Model Context Protocol) Integration
+## 🌟 Key Features
 
-The assistant connects to external remote and local MCP tool providers:
-
-- **Remote FastMCP Server**: HTTP/SSE endpoint (`https://splendid-gold-dingo.fastmcp.app/mcp`) for expense tracking (`add_expense`, `list_expenses`, `summarize`).
-- **Stock Price Tool**: Real-time financial quotes via Alpha Vantage (`get_stock_price`).
-- **DuckDuckGo Web Search**: Live search results (`duckduckgo_search`).
-- **Universal Sync/Async Executor**: Wraps async `StructuredTool` instances (`execute_tool`) seamlessly on a dedicated background event loop.
-
----
-
-## 📚 Document RAG Module (`src/rag/`)
-
-- **Persistent Vector Storage**: Local SQLite-backed ChromaDB store under `chroma_db/`. No external database required.
-- **Zero-Cost Embeddings**: Offline Sentence Transformers (`all-MiniLM-L6-v2`) CPU embedding model for fast 384-dimensional vector embeddings out-of-the-box.
-- **Visual Indexing Pipeline**: Real-time 3-step status and progress bar:
-  1. 📄 **Page & Text Extraction** (`pypdf`, `python-docx`)
-  2. ✂️ **Semantic Chunking** (1,000 chars, 150 overlap)
-  3. 🧠 **Dense Vector Embedding & Storage** (ChromaDB)
+- **Autonomous Graph Execution**: Fully stateful execution loop managed by `langgraph.graph.StateGraph`.
+- **Intelligent Routing**: Avoids unnecessary web searches for closed-book evergreen topics while fetching fresh, live facts for technical or news topics.
+- **Parallel Worker Fanout**: Concurrently generates article sections using LangGraph's dynamic `Send` pattern, drastically reducing end-to-end generation latency.
+- **Resilient Retry & Backoff**: Exponential backoff wrapper handling API rate limits (Groq 429/TPM limits) and JSON structured output parsing failures.
+- **Structured Pydantic Schemas**: Strict data validation for routing decisions, article plans, research evidence packs, and visual image specifications.
+- **Dynamic Technical Diagrams**: Automatically injects Mermaid architecture flowcharts and visual diagrams into technical posts.
+- **Interactive Streamlit Workspace**: Features a structured Content Brief form, real-time agent workflow status indicators, live streaming run logs, and one-click markdown/bundle export.
 
 ---
 
-## 🤖 Supported Models & Providers
+## 📂 Project Structure
 
-| Provider | Model / Endpoint | Role |
-| :--- | :--- | :--- |
-| **Groq** | `openai/gpt-oss-120b` / `qwen/qwen3.6-27b` | Core LLM (Router, Orchestrator, Workers, MCP Tool Binding, RAG QA) |
-| **MCP Client** | `FastMCP HTTP Stream` | Remote & local MCP tool invocation |
-| **SentenceTransformers** | `all-MiniLM-L6-v2` | Zero-cost local CPU text embedding generation |
-| **ChromaDB** | Local Persistent SQLite | Vector database (`chroma_db/`) |
-| **DuckDuckGo & Tavily** | `ddgs` & `tavily-search` | Live web evidence & score retrieval |
+```
+ai-blog-writing-agent/
+├── app.py                     # Main Streamlit application entry point
+├── requirements.txt           # Python dependencies
+├── .env.example               # Environment variable placeholders
+├── .gitignore                 # Git ignore rules
+├── README.md                  # Project documentation
+│
+├── src/
+│   ├── agent/
+│   │   ├── graph.py           # LangGraph StateGraph assembly & compilation
+│   │   ├── nodes.py           # Router, Research, Orchestrator, Worker, Reducer, Visual nodes
+│   │   ├── rate_limiter.py    # Request rate limiter for LLM calls
+│   │   ├── schemas.py         # Pydantic models & LangGraph TypedDict State
+│   │   └── tools.py           # Tavily web search & diagram generation tools
+│   │
+│   ├── paths.py               # Output & image filesystem path helpers
+│   │
+│   └── ui/
+│       ├── components.py      # Streamlit header, content brief, progress bar, sidebar
+│       ├── helpers.py         # Streaming utilities & past blog loaders
+│       ├── renderer.py        # Markdown & diagram rendering engine
+│       ├── theme.py           # Custom CSS styling tokens
+│       └── views.py           # Article workspace & past library archive views
+│
+└── tests/
+    └── test_agent.py          # Unit tests for router, worker, reducer & tools
+```
 
 ---
 
-## 💻 Quickstart Guide
+## 🛠 Technology Stack
+
+- **Framework**: LangGraph, LangChain Core
+- **LLM Provider**: Groq (`llama-3.3-70b-versatile` / `qwen-2.5-32b`) / ChatOpenAI fallback
+- **Web Search**: Tavily Search API
+- **Data Validation**: Pydantic v2, TypedDict
+- **User Interface**: Streamlit
+- **Diagrams & Visuals**: Mermaid.js, Pollinations AI, Google Gemini API
+
+---
+
+## ⚡ Quickstart Guide
+
+### 1. Prerequisites
+- Python 3.10 or higher installed
+- Free API keys from [Groq Console](https://console.groq.com/keys) and [Tavily](https://tavily.com)
+
+### 2. Installation
 
 ```bash
-# 1. Clone repository
+# Clone repository
 git clone https://github.com/jeetsinghbhati7773/blog-writing-multi-agent.git
 cd blog-writing-multi-agent
 
-# 2. Create and activate virtual environment
+# Create virtual environment
 python -m venv venv
-.\venv\Scripts\Activate.ps1   # Windows
-# source venv/bin/activate    # Linux/macOS
 
-# 3. Install requirements
+# Activate virtual environment (Windows PowerShell)
+.\venv\Scripts\Activate.ps1
+
+# Install dependencies
 pip install -r requirements.txt
+```
 
-# 4. Configure API Keys in .env
-# Set GROQ_API_KEY, GROQ_MODEL="openai/gpt-oss-120b", TAVILY_API_KEY
+### 3. Environment Setup
+
+Copy `.env.example` to `.env` and fill in your API keys:
+
+```bash
 cp .env.example .env
+```
 
-# 5. Launch AI Content Studio
+`.env` configuration:
+```env
+GROQ_API_KEY=your_groq_api_key_here
+GROQ_MODEL=llama-3.3-70b-versatile
+TAVILY_API_KEY=your_tavily_api_key_here
+```
+
+### 4. Running the Application
+
+```bash
 streamlit run app.py
 ```
 
+Open your browser at `http://localhost:8501`.
+
 ---
 
-## 🧪 Automated Testing
+## 🧪 Testing
 
-Run the RAG unit test suite to verify file loaders, chunk splitting, ChromaDB indexing, and grounded retrieval:
+Run the automated test suite with `pytest`:
 
 ```bash
-python -m pytest tests/test_rag.py
+pytest tests/
 ```
 
 ---
 
-## 📄 License
+## 📌 Limitations & Future Improvements
 
-Distributed under the **MIT License**.
+- **Export Formats**: Currently supports Markdown and Zip bundle exports; PDF/HTML export support is planned.
+- **Multilingual Generation**: Optimizations for non-English technical drafting can be added in future graph nodes.
