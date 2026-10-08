@@ -14,6 +14,8 @@ from langgraph.types import interrupt
 
 from src.agent.schemas import (
     State,
+    OverallState,
+    SocialPosts,
     Task,
     Plan,
     EvidenceItem,
@@ -1546,20 +1548,22 @@ def decide_images(state: State) -> dict:
 
 
 def generate_and_place_images(state: State) -> dict:
-    plan = state["plan"]
-    assert plan is not None
+    plan = state.get("plan")
+    topic = state.get("topic") or "blog"
+    blog_title = plan.blog_title if plan else topic
 
-    md = state.get("md_with_placeholders") or state["merged_md"]
+    md = state.get("md_with_placeholders") or state.get("merged_md") or state.get("final", "")
     image_specs = state.get("image_specs", []) or []
 
     # Ensure outputs directory exists (anchored to the project root, not CWD)
     outputs_dir = ensure_dir(OUTPUTS_DIR)
 
-    filename_str = f"{safe_slug(plan.blog_title)}.md"
+    filename_str = f"{safe_slug(blog_title)}.md"
     out_file = outputs_dir / filename_str
 
     if not image_specs:
-        out_file.write_text(md, encoding="utf-8")
+        if md:
+            out_file.write_text(md, encoding="utf-8")
         return {"final": md}
 
     # Store images inside a topic-based subfolder under images/<topic_slug>/
@@ -1798,4 +1802,163 @@ def route_after_final_approval(state: State) -> str:
     elif status == ApprovalStatus.CHANGES_REQUESTED or status == "changes_requested":
         return "revision"
     return "final_approval"
+
+
+# -----------------------------
+# Social Media Syndication Node & Visual Mermaid Agent Node
+# -----------------------------
+SOCIAL_SYNDICATION_SYSTEM = """You are an expert content marketing and social media strategist.
+
+Your task is to take a completed technical blog article and generate multi-channel marketing content.
+
+Produce a JSON response matching the SocialPosts schema:
+1. twitter_thread: A 5 to 7 tweet thread summarizing key insights. Each tweet must be <= 280 characters, with hooks, core takeaways, hashtags, and a concluding call-to-action.
+2. linkedin_post: A structured, high-engagement LinkedIn post with bold headlines, bullet points, emojis, short paragraphs, and a call-to-action.
+3. newsletter_summary: A 200-300 word email digest summary formatted for a technical newsletter audience.
+
+Ensure all outputs strictly conform to the field constraints.
+"""
+
+
+def social_syndication_node(state: State) -> Dict[str, Any]:
+    """
+    Social Syndication Node: Generates multi-channel derivative marketing content 
+    (Twitter/X thread, LinkedIn post, Email newsletter summary) from the final article.
+    """
+    article = state.get("final") or state.get("md_with_placeholders") or state.get("merged_md") or ""
+    topic = state.get("topic", "")
+    seo_plan = state.get("seo_plan")
+    
+    seo_context = ""
+    if seo_plan:
+        meta_title = getattr(seo_plan, "meta_title", "")
+        keyword = getattr(seo_plan, "primary_keyword", "")
+        seo_context = f"Meta Title: {meta_title}\nPrimary Keyword: {keyword}\n"
+
+    try:
+        social_posts = structured_with_retry(
+            SocialPosts,
+            [
+                SystemMessage(content=SOCIAL_SYNDICATION_SYSTEM),
+                HumanMessage(
+                    content=(
+                        f"Topic: {topic}\n"
+                        f"{seo_context}\n"
+                        f"Article Content:\n{article[:6000]}"
+                    )
+                ),
+            ],
+        )
+    except Exception as e:
+        logger.warning("Social syndication LLM generation failed, generating fallback social posts: %s", e)
+        social_posts = SocialPosts(
+            twitter_thread=[
+                f"1/7 🚀 Deep dive into {topic}! Here is a thread breaking down the key concepts and architecture.",
+                f"2/7 Key Takeaway: Understanding {topic} requires a structured approach to problem solving and design.",
+                f"3/7 Implementation matters: Ensure robust error handling, scalability, and clean component isolation.",
+                f"4/7 Best Practices: Monitor system metrics and optimize key bottlenecks continuously.",
+                f"5/7 Performance & Security: Keep dependencies updated and enforce strict verification.",
+                f"6/7 Read the full post for detailed code samples, benchmarks, and diagrams! #{safe_slug(topic)}",
+                f"7/7 What are your thoughts on {topic}? Let us know in the comments below! 👇"
+            ],
+            linkedin_post=(
+                f"💡 **Deep Dive into {topic}**\n\n"
+                f"In our latest technical article, we break down everything you need to know about {topic}.\n\n"
+                f"**Key Highlights:**\n"
+                f"• Architecture & design principles\n"
+                f"• Real-world implementation patterns\n"
+                f"• Performance & scalability considerations\n\n"
+                f"👉 Read the full article and let us know your thoughts! #{safe_slug(topic)} #TechBlog #SoftwareEngineering"
+            ),
+            newsletter_summary=(
+                f"Welcome to this week's technical newsletter! Today, we're taking an in-depth look at {topic}. "
+                f"Whether you are building complex distributed systems or optimizing individual services, understanding "
+                f"these core principles will help you design better software. Check out the full post for code examples, "
+                f"architecture diagrams, and implementation details."
+            )
+        )
+
+    return {"social_posts": social_posts}
+
+
+MERMAID_GENERATOR_SYSTEM = """You are an expert technical visualizer and system designer.
+
+Your task is to analyze a technical blog article and synthesize 1 to 2 clean, valid Mermaid.js diagrams to be embedded into the markdown.
+
+Rules:
+1. Generate valid Mermaid.js diagram code blocks tagged strictly as ```mermaid ... ``` (e.g., flowchart TD, sequenceDiagram, or classDiagram).
+2. Ensure syntactical validity: wrap node labels containing spaces, parentheses, or special characters in double quotes (e.g., A["User Request (HTTP)"]). Avoid unescaped special characters.
+3. Choose 1-2 key sections (H2/H3) in the article where a Mermaid diagram visually clarifies the process, data flow, or system architecture.
+4. Return the updated full markdown article text with the Mermaid diagram code block(s) seamlessly inserted right after the relevant H2/H3 header.
+"""
+
+
+def visual_agent_node(state: State) -> Dict[str, Any]:
+    """
+    Visual Agent Node: Generates visual images and synthesizes valid Mermaid.js diagrams 
+    embedded directly into the article markdown.
+    """
+    # 1. First ensure images are generated and placed if image_specs exist
+    image_res = generate_and_place_images(state)
+    article = image_res.get("final") or state.get("md_with_placeholders") or state.get("merged_md") or ""
+
+    # 2. Check if mermaid blocks already exist in the article
+    if "```mermaid" in article:
+        return {"final": article, "md_with_placeholders": article}
+
+    topic = state.get("topic") or "System Architecture"
+    
+    try:
+        response = invoke_with_retry(
+            llm,
+            [
+                SystemMessage(content=MERMAID_GENERATOR_SYSTEM),
+                HumanMessage(
+                    content=(
+                        f"Topic: {topic}\n\n"
+                        f"Please synthesize 1 to 2 clean, valid Mermaid.js diagrams and insert them into appropriate H2/H3 sections of the markdown below.\n\n"
+                        f"Return ONLY the complete updated Markdown text:\n\n"
+                        f"{article}"
+                    )
+                ),
+            ],
+        )
+        updated_md = response.content.strip()
+        if updated_md.startswith("```markdown"):
+            updated_md = re.sub(r"^```markdown\s*", "", updated_md)
+            updated_md = re.sub(r"\s*```$", "", updated_md)
+        elif updated_md.startswith("```") and not updated_md.startswith("```mermaid"):
+            updated_md = re.sub(r"^```\w*\s*", "", updated_md)
+            updated_md = re.sub(r"\s*```$", "", updated_md)
+
+        if "```mermaid" in updated_md:
+            return {"final": updated_md, "md_with_placeholders": updated_md}
+    except Exception as e:
+        logger.warning("LLM Mermaid diagram generation failed, applying default Mermaid diagram: %s", e)
+
+    # 3. Fallback: Generate a clean default Mermaid flowchart diagram and insert after the first H2 header
+    topic_clean = topic.replace('"', "'")
+    default_mermaid = (
+        "\n\n```mermaid\n"
+        "flowchart TD\n"
+        f'    A["Client Input / Topic: {topic_clean}"] --> B["Processing Pipeline"]\n'
+        '    B --> C["Core Logic & Operations"]\n'
+        '    C --> D["Final System Output"]\n'
+        "```\n\n"
+    )
+
+    lines = article.split("\n")
+    inserted = False
+    for i, line in enumerate(lines):
+        if line.startswith("## ") and not inserted:
+            lines.insert(i + 1, default_mermaid)
+            inserted = True
+            break
+
+    if not inserted:
+        lines.append(default_mermaid)
+
+    final_md = "\n".join(lines)
+    return {"final": final_md, "md_with_placeholders": final_md}
+
 

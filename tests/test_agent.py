@@ -679,5 +679,101 @@ def test_seo_agent_node_produces_seo_plan(monkeypatch):
     assert len(out["seo_plan"].faq_items) == 1
 
 
+def test_social_syndication_node_fallback_and_schema():
+    """Verify social_syndication_node returns a valid SocialPosts object."""
+    state = {
+        "topic": "Microservices Architecture",
+        "final": "# Microservices Architecture\n\n## Introduction\nMicroservices break down monoliths.",
+    }
+    out = agent_nodes.social_syndication_node(state)
+    assert "social_posts" in out
+    posts = out["social_posts"]
+    assert hasattr(posts, "twitter_thread")
+    assert len(posts.twitter_thread) >= 5
+    assert hasattr(posts, "linkedin_post")
+    assert len(posts.linkedin_post) > 20
+    assert hasattr(posts, "newsletter_summary")
+    assert len(posts.newsletter_summary) > 20
+
+
+def test_visual_agent_node_embeds_mermaid_diagram():
+    """Verify visual_agent_node generates and embeds valid Mermaid markdown blocks."""
+    state = {
+        "topic": "Event Driven Systems",
+        "merged_md": "# Event Driven Systems\n\n## System Architecture\nKafka brokers handle incoming events.",
+    }
+    out = agent_nodes.visual_agent_node(state)
+    assert "final" in out
+    final_text = out["final"]
+    assert "```mermaid" in final_text
+
+
+def test_export_utilities():
+    """Verify export helper functions for Markdown with frontmatter, HTML, and JSON."""
+    from src.ui.helpers import (
+        export_to_markdown_with_frontmatter,
+        export_to_html,
+        export_to_json,
+    )
+
+    sample_md = "# Distributed Caching\n\n## Overview\nRedis caching reduces latency."
+    seo_mock = {
+        "meta_title": "Distributed Caching Guide",
+        "meta_description": "Learn Redis caching strategies.",
+        "primary_keyword": "redis",
+        "secondary_keywords": ["caching", "performance"],
+        "suggested_slug": "distributed-caching-guide",
+    }
+    social_mock = {
+        "twitter_thread": ["1/5 Redis caching thread", "2/5 Cache invalidation"],
+        "linkedin_post": "Deep dive into Redis!",
+        "newsletter_summary": "In this week's newsletter...",
+    }
+
+    # Test Markdown export
+    md_out = export_to_markdown_with_frontmatter(sample_md, seo_mock, social_mock)
+    assert md_out.startswith("---")
+    assert 'title: "Distributed Caching Guide"' in md_out
+    assert "## 📢 Derivative Social Media Content" in md_out
+
+    # Test HTML export
+    html_out = export_to_html(sample_md)
+    assert "<!DOCTYPE html>" in html_out
+    assert "Distributed Caching" in html_out
+    assert "</html>" in html_out
+
+    # Test JSON export
+    state_mock = {
+        "topic": "Distributed Caching",
+        "final": sample_md,
+        "seo_plan": seo_mock,
+        "social_posts": social_mock,
+    }
+    json_out = export_to_json(state_mock)
+    import json
+    parsed = json.loads(json_out)
+    assert parsed["topic"] == "Distributed Caching"
+    assert parsed["final"] == sample_md
+
+
+def test_publishing_tools_missing_credentials():
+    """Verify publishing tools handle missing credentials or invalid URLs gracefully."""
+    devto_res = agent_tools.publish_to_devto(
+        api_key="",
+        title="Test Title",
+        markdown_content="Content",
+    )
+    assert devto_res["status"] == "error"
+    assert "missing" in devto_res["message"].lower()
+
+    webhook_res = agent_tools.trigger_cms_webhook(
+        webhook_url="",
+        payload={"title": "Test Title"},
+    )
+    assert webhook_res["status"] == "error"
+    assert "missing" in webhook_res["message"].lower()
+
+
+
 
 

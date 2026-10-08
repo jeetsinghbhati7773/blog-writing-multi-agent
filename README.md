@@ -4,15 +4,15 @@
 [![LangGraph](https://img.shields.io/badge/LangGraph-StateGraph-orange.svg)](https://github.com/langchain-ai/langgraph)
 [![LangChain](https://img.shields.io/badge/LangChain-v0.3-green.svg)](https://www.langchain.com/)
 [![Streamlit](https://img.shields.io/badge/Streamlit-UI-red.svg)](https://streamlit.io/)
-[![Pytest Passed](https://img.shields.io/badge/Tests-28%2F28%20Passed-brightgreen.svg)](tests/test_agent.py)
+[![Pytest Passed](https://img.shields.io/badge/Tests-32%2F32%20Passed-brightgreen.svg)](tests/test_agent.py)
 
-An autonomous, multi-agent AI system designed to research, filter, plan, validate, draft, fact-check, edit, optimize SEO, and generate visual assets for comprehensive, production-grade technical blog articles. Features **Dual Human-in-the-Loop (HITL)** checkpoints for plan approval and final content review. Built with **LangGraph**, **LangChain**, **Groq LLM**, and **Tavily Web Search**.
+An autonomous, multi-agent AI system designed to research, filter, plan, validate, draft, fact-check, edit, optimize SEO, generate visual assets & Mermaid.js diagrams, create derivative social media posts, and publish directly to CMS platforms. Features **Dual Human-in-the-Loop (HITL)** checkpoints for plan approval and final content review. Built with **LangGraph**, **LangChain**, **Groq LLM**, **Tavily Web Search**, and **Streamlit**.
 
 ---
 
 ## 💡 Problem Statement
 
-Writing deep technical blog posts requires significant manual effort: conducting web research, filtering source authority, resolving conflicting claims, organizing structured outlines, drafting individual sections, ensuring factual accuracy, avoiding repetition, optimizing SEO, and generating architecture diagrams. Single-prompt LLM generation often leads to hallucinations, repetitive prose, shallow coverage, and token context overflow on long articles.
+Writing deep technical blog posts requires significant manual effort: conducting web research, filtering source authority, resolving conflicting claims, organizing structured outlines, drafting individual sections, ensuring factual accuracy, avoiding repetition, optimizing SEO, generating architecture diagrams, formatting social media threads, and publishing across CMS platforms. Single-prompt LLM generation often leads to hallucinations, repetitive prose, shallow coverage, and token context overflow on long articles.
 
 ---
 
@@ -47,10 +47,11 @@ flowchart TD
     
     SEOAgent --> HITL2{🧑 HITL #2: Final Content Review}
     
-    HITL2 -->|Approve| Visual[Visual & Diagram Agent]
+    HITL2 -->|Approve| Visual[Visual Agent & Mermaid Diagram Synthesizer]
     HITL2 -->|Request Revision| Revision
     
-    Visual --> Final([Published Article & Assets])
+    Visual --> SocialSyndication[📢 Social Media Syndication Node]
+    SocialSyndication --> ExportPublish([📥 Multi-Format Export Engine & 🚀 CMS Direct Publishing])
 ```
 
 ---
@@ -61,28 +62,48 @@ flowchart TD
    - **HITL Checkpoint #1 (Plan Review)**: Pauses execution after the Orchestrator & Outline Validator so you can review, modify, or regenerate the outline before section generation.
    - **HITL Checkpoint #2 (Final Content Review)**: Pauses after section workers, Critic, Fact Checker, and SEO Agent complete so you can inspect the full draft, SEO metadata, and fact check scores before publication.
 
-2. **🧐 Autonomous Critic & Quality Audit Loop**:
+2. **📢 Social Media Syndication Node**:
+   - Automatically generates multi-channel derivative marketing content from the final article:
+     - **Twitter/X Thread**: 5–7 tweets (<= 280 chars) with hooks, key takeaways, hashtags, and CTAs.
+     - **LinkedIn Post**: Formatted post with bold headlines, emojis, bullet points, and CTAs.
+     - **Email Newsletter Digest**: 200–300 word executive summary tailored for tech subscribers.
+
+3. **📊 Mermaid.js System Diagram Generator**:
+   - Analyzes article architecture and process flows to synthesize clean, valid `mermaid` code blocks (`flowchart TD`, `sequenceDiagram`, `architecture`) embedded seamlessly into markdown headers.
+
+4. **📥 Multi-Format Export Engine**:
+   - Download finished posts and metadata in multiple formats:
+     - **Hugo/Jekyll YAML Frontmatter Markdown (`.md`)** with meta titles, tags, and descriptions.
+     - **Standalone Styled HTML (`.html`)** with modern typography layout CSS.
+     - **Full Payload Report (`.json`)** serializing article, SEO plan, fact-check audit, and social assets.
+     - **Complete Asset ZIP Package (`.zip`)**.
+
+5. **🚀 Webhook & CMS Direct Publishing**:
+   - Direct one-click publishing of drafts/posts to **Dev.to API** (`https://dev.to/api/articles`).
+   - Custom **CMS Webhook trigger** sending POST payloads to platforms like Strapi, WordPress, Zapier, or Make.
+
+6. **🧐 Autonomous Critic & Quality Audit Loop**:
    - Evaluates drafts across 7 quality dimensions (*factual consistency, relevance, completeness, readability, repetition, structure, grounding*).
    - Automatically triggers a `revision_node` loop if quality score is below threshold (< 7.5 / 10).
 
-3. **🛡️ Fact & Citation Grounding Checker**:
+7. **🛡️ Fact & Citation Grounding Checker**:
    - Cross-references draft claims against retrieved research evidence sources, calculating a 0–10 factual grounding score and claim verification table.
 
-4. **🔎 Source Quality Filter & Contradiction Detector**:
+8. **🔎 Source Quality Filter & Contradiction Detector**:
    - `source_filter_node`: Scores search results by authority, relevance, freshness, and deduplication before planning.
    - `contradiction_detector_node`: Identifies conflicting claims across web sources and provides resolution guidance to the Orchestrator.
 
-5. **🎨 6 Article Style Profiles**:
+9. **🎨 6 Article Style Profiles**:
    - Selectable writing presets (`Technical Tutorial`, `Beginner Friendly`, `Research Style`, `Developer Blog`, `LinkedIn Post`, `SEO Blog`) driving Planner & Worker prompts.
 
-6. **🎯 SEO Optimization Agent**:
-   - Generates meta titles, meta descriptions, primary/secondary keywords, clean URL slugs, readability levels, and FAQ sections.
+10. **🎯 SEO Optimization Agent**:
+    - Generates meta titles, meta descriptions, primary/secondary keywords, clean URL slugs, readability levels, and FAQ sections.
 
-7. **⚡ Smart Parallel Worker Fanout**:
-   - Concurrently generates article sections using LangGraph's dynamic `Send` pattern, with shared rate limiting (`groq_rate_limiter`) to avoid API rate spikes.
+11. **⚡ Smart Parallel Worker Fanout**:
+    - Concurrently generates article sections using LangGraph's dynamic `Send` pattern, with shared rate limiting (`groq_rate_limiter`) to avoid API rate spikes.
 
-8. **📊 Offline Evaluation Benchmark Suite**:
-   - Standalone evaluation framework (`tests/eval_benchmark.py`) assessing Relevance, Completeness, Citation Coverage, Word Target Adherence, and Execution Latency across test datasets.
+12. **📊 Offline Evaluation Benchmark Suite**:
+    - Standalone evaluation framework (`tests/eval_benchmark.py`) assessing Relevance, Completeness, Citation Coverage, Word Target Adherence, and Execution Latency across test datasets.
 
 ---
 
@@ -99,22 +120,22 @@ ai-blog-writing-agent/
 ├── src/
 │   ├── agent/
 │   │   ├── graph.py           # LangGraph StateGraph assembly & compilation
-│   │   ├── nodes.py           # Router, Research, Filter, Contradiction, Orchestrator, HITL, Worker, Reducer, FactChecker, Critic, SEO, Visual nodes
+│   │   ├── nodes.py           # Router, Research, Filter, Contradiction, Orchestrator, HITL, Worker, Reducer, FactChecker, Critic, SEO, Visual & Mermaid, Social Syndication nodes
 │   │   ├── rate_limiter.py    # Request rate limiter for LLM calls
-│   │   ├── schemas.py         # Pydantic models & LangGraph TypedDict State
-│   │   └── tools.py           # Tavily web search & image generation tools
+│   │   ├── schemas.py         # Pydantic models (SocialPosts, SEOPlan, etc.) & TypedDict State
+│   │   └── tools.py           # Tavily search, image generation, Dev.to & Webhook publishing tools
 │   │
 │   ├── paths.py               # Output & image filesystem path helpers
 │   │
 │   └── ui/
 │       ├── components.py      # Streamlit header, content brief, progress bar, dual HITL review cards
-│       ├── helpers.py         # Streaming utilities & past blog loaders
+│       ├── helpers.py         # Streaming utilities, Markdown frontmatter, HTML, and JSON export helpers
 │       ├── renderer.py        # Markdown & image rendering engine
 │       ├── theme.py           # Custom CSS styling tokens
-│       └── views.py           # Article workspace, SEO tab, FactCheck tab, Critic tab, and archive views
+│       └── views.py           # Article workspace, Social tab, Publishing tab, SEO tab, FactCheck tab, Critic tab, and archive views
 │
 └── tests/
-    ├── test_agent.py          # Complete unit test suite (28 test cases)
+    ├── test_agent.py          # Complete unit test suite (32 test cases passed)
     └── eval_benchmark.py      # Offline evaluation benchmark suite
 ```
 

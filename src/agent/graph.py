@@ -19,6 +19,8 @@ reducer_graph.add_node("seo_agent", lambda s: nodes.seo_agent_node(s))
 reducer_graph.add_node("final_approval", lambda s: nodes.final_approval_node(s))
 reducer_graph.add_node("decide_images", lambda s: nodes.decide_images(s))
 reducer_graph.add_node("generate_and_place_images", lambda s: nodes.generate_and_place_images(s))
+reducer_graph.add_node("visual_agent", lambda s: nodes.visual_agent_node(s))
+reducer_graph.add_node("social_syndication", lambda s: nodes.social_syndication_node(s))
 
 reducer_graph.add_edge(START, "merge_content")
 reducer_graph.add_edge("merge_content", "fact_checker")
@@ -40,8 +42,9 @@ reducer_graph.add_conditional_edges(
     {"decide_images": "decide_images", "revision": "revision", "final_approval": "final_approval"},
 )
 
-reducer_graph.add_edge("decide_images", "generate_and_place_images")
-reducer_graph.add_edge("generate_and_place_images", END)
+reducer_graph.add_edge("decide_images", "visual_agent")
+reducer_graph.add_edge("visual_agent", "social_syndication")
+reducer_graph.add_edge("social_syndication", END)
 
 reducer_subgraph = reducer_graph.compile()
 
@@ -61,6 +64,7 @@ def reducer_node(state: State) -> dict:
         "final_approval_status": res.get("final_approval_status"),
         "md_with_placeholders": res.get("md_with_placeholders", ""),
         "image_specs": res.get("image_specs", []),
+        "social_posts": res.get("social_posts"),
         "final": res.get("final", ""),
     }
 

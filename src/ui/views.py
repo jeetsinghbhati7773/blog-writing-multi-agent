@@ -20,7 +20,11 @@ from src.ui.helpers import (
     list_past_blogs,
     read_md_file,
     safe_slug,
+    export_to_markdown_with_frontmatter,
+    export_to_html,
+    export_to_json,
 )
+from src.agent.tools import publish_to_devto, trigger_cms_webhook
 from src.ui.renderer import render_markdown_with_local_images
 from src.paths import IMAGES_DIR
 
@@ -128,26 +132,55 @@ def render_preview_tab(out: Dict[str, Any]):
 
     render_markdown_with_local_images(final_md)
 
-    md_filename = f"{safe_slug(blog_title)}.md"
-
     st.divider()
-    col1, col2 = st.columns(2)
+    st.markdown("### 📥 Multi-Format Export Engine")
+    
+    md_filename = f"{safe_slug(blog_title)}.md"
+    md_frontmatter = export_to_markdown_with_frontmatter(
+        final_md,
+        out.get("seo_plan"),
+        out.get("social_posts"),
+    )
+    html_content = export_to_html(final_md)
+    json_report = export_to_json(out)
+    bundle = bundle_zip(final_md, md_filename, IMAGES_DIR)
+
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.download_button(
-            "⬇️ Download Markdown (.md)",
-            data=final_md.encode("utf-8"),
+            "⬇️ Markdown (.md)",
+            data=md_frontmatter.encode("utf-8"),
             file_name=md_filename,
             mime="text/markdown",
             use_container_width=True,
+            help="Download clean Markdown with Hugo/Jekyll YAML frontmatter and social posts.",
         )
     with col2:
-        bundle = bundle_zip(final_md, md_filename, IMAGES_DIR)
         st.download_button(
-            "📦 Download Complete Bundle (.zip)",
+            "🌐 HTML (.html)",
+            data=html_content.encode("utf-8"),
+            file_name=f"{safe_slug(blog_title)}.html",
+            mime="text/html",
+            use_container_width=True,
+            help="Download standalone styled HTML document.",
+        )
+    with col3:
+        st.download_button(
+            "📊 Full Report (.json)",
+            data=json_report.encode("utf-8"),
+            file_name=f"{safe_slug(blog_title)}_report.json",
+            mime="application/json",
+            use_container_width=True,
+            help="Download complete JSON payload (Article, SEO, Fact Check, Social Posts).",
+        )
+    with col4:
+        st.download_button(
+            "📦 Bundle (.zip)",
             data=bundle,
             file_name=f"{safe_slug(blog_title)}_bundle.zip",
             mime="application/zip",
             use_container_width=True,
+            help="Download markdown and all generated diagrams/images as a ZIP package.",
         )
 
 
@@ -355,6 +388,104 @@ def render_seo_tab(out: Dict[str, Any]):
                 st.write(item.get("answer"))
 
 
+def render_social_posts_tab(out: Dict[str, Any]):
+    st.subheader("📢 Social Media Syndication & Derivative Content")
+    social_obj = out.get("social_posts")
+    if not social_obj:
+        st.info("No social syndication posts available for this run.")
+        return
+
+    if hasattr(social_obj, "model_dump"):
+        social_dict = social_obj.model_dump()
+    elif isinstance(social_obj, dict):
+        social_dict = social_obj
+    else:
+        social_dict = {}
+
+    st.markdown("#### **🐦 Twitter / X Thread**")
+    tweets = social_dict.get("twitter_thread", [])
+    if tweets:
+        for idx, tweet in enumerate(tweets, 1):
+            st.text_area(f"Tweet {idx}/{len(tweets)} ({len(tweet)} chars)", value=tweet, height=85, key=f"tw_{idx}")
+    else:
+        st.caption("No Twitter thread available.")
+
+    st.divider()
+    st.markdown("#### **💼 LinkedIn Post**")
+    linkedin = social_dict.get("linkedin_post", "")
+    if linkedin:
+        st.text_area("LinkedIn Post Content", value=linkedin, height=220, key="linkedin_text")
+    else:
+        st.caption("No LinkedIn post available.")
+
+    st.divider()
+    st.markdown("#### **📧 Email Newsletter Summary**")
+    newsletter = social_dict.get("newsletter_summary", "")
+    if newsletter:
+        st.text_area("Newsletter Digest", value=newsletter, height=180, key="newsletter_text")
+    else:
+        st.caption("No newsletter summary available.")
+
+
+def render_publishing_tab(out: Dict[str, Any]):
+    st.subheader("🚀 Webhook & CMS Direct Publishing")
+    st.caption("Publish your finished article directly to Dev.to or send a JSON payload to a custom CMS Webhook endpoint.")
+
+    final_md = out.get("final") or ""
+    plan_obj = out.get("plan")
+    title = extract_title_from_md(final_md, "Untitled Article")
+    if plan_obj:
+        title = getattr(plan_obj, "blog_title", title) if hasattr(plan_obj, "blog_title") else plan_obj.get("blog_title", title)
+
+    tags = []
+    seo_plan = out.get("seo_plan")
+    if seo_plan:
+        kw = getattr(seo_plan, "primary_keyword", None) or (seo_plan.get("primary_keyword") if isinstance(seo_plan, dict) else None)
+        if kw:
+            tags.append(str(kw))
+
+    with st.expander("📝 Dev.to Direct Publishing Options", expanded=True):
+        devto_key = st.text_input("Dev.to API Key", type="password", key="devto_api_key_input", help="Get your API key at dev.to/settings/extensions")
+        publish_immediately = st.checkbox("Publish immediately (Unchecked = Save as Draft)", value=False, key="devto_publish_mode")
+
+        if st.button("🚀 Publish to Dev.to", key="devto_pub_btn", use_container_width=True):
+            if not devto_key:
+                st.error("Please enter a valid Dev.to API Key.")
+            else:
+                with st.spinner("Publishing to Dev.to..."):
+                    res = publish_to_devto(
+                        api_key=devto_key,
+                        title=title,
+                        markdown_content=final_md,
+                        tags=tags,
+                        published=publish_immediately,
+                    )
+                    if res.get("status") == "success":
+                        st.success(f"Successfully published! [View Article on Dev.to]({res.get('url')})")
+                    else:
+                        st.error(f"Publishing failed: {res.get('message')}")
+
+    with st.expander("📡 Custom CMS Webhook Options", expanded=True):
+        webhook_url = st.text_input("Webhook Endpoint URL", key="webhook_url_input", placeholder="https://api.strapi.io/webhooks or https://hooks.zapier.com/...")
+
+        if st.button("📡 Trigger CMS Webhook", key="webhook_pub_btn", use_container_width=True):
+            if not webhook_url:
+                st.error("Please enter a valid Webhook URL.")
+            else:
+                with st.spinner("Sending payload to Webhook..."):
+                    payload = {
+                        "title": title,
+                        "article_markdown": final_md,
+                        "seo_metadata": out.get("seo_plan").model_dump() if hasattr(out.get("seo_plan"), "model_dump") else out.get("seo_plan"),
+                        "social_posts": out.get("social_posts").model_dump() if hasattr(out.get("social_posts"), "model_dump") else out.get("social_posts"),
+                    }
+                    res = trigger_cms_webhook(webhook_url, payload)
+                    if res.get("status") == "success":
+                        st.success(f"Webhook triggered successfully! Status Code: {res.get('status_code')}")
+                    else:
+                        st.error(f"Webhook trigger failed: {res.get('message')}")
+
+
 def render_article_workspace(out: Dict[str, Any], is_history: bool = False, blog_name: str = ""):
     """
     Renders workspace for an article.
@@ -368,11 +499,15 @@ def render_article_workspace(out: Dict[str, Any], is_history: bool = False, blog
         render_preview_tab(out)
     else:
         render_article_metrics(out)
-        tab_article, tab_seo, tab_fc, tab_critic, tab_research, tab_plan, tab_visuals, tab_logs = st.tabs(
-            ["📝 Article", "🎯 SEO", "🛡️ Fact Check", "🧐 Quality Audit", "🔎 Research", "🧩 Plan", "🖼️ Visuals", "🧾 Run Details"]
+        tab_article, tab_social, tab_publish, tab_seo, tab_fc, tab_critic, tab_research, tab_plan, tab_visuals, tab_logs = st.tabs(
+            ["📝 Article", "📢 Social", "🚀 Publish", "🎯 SEO", "🛡️ Fact Check", "🧐 Quality Audit", "🔎 Research", "🧩 Plan", "🖼️ Visuals", "🧾 Run Details"]
         )
         with tab_article:
             render_preview_tab(out)
+        with tab_social:
+            render_social_posts_tab(out)
+        with tab_publish:
+            render_publishing_tab(out)
         with tab_seo:
             render_seo_tab(out)
         with tab_fc:

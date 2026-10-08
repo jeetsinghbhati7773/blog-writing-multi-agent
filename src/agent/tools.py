@@ -193,3 +193,88 @@ def safe_slug(title: str) -> str:
     s = re.sub(r"[^a-z0-9 _-]+", "", s)
     s = re.sub(r"\s+", "_", s).strip("_")
     return s or "blog"
+
+
+def publish_to_devto(
+    api_key: str,
+    title: str,
+    markdown_content: str,
+    tags: Optional[List[str]] = None,
+    published: bool = False,
+) -> dict:
+    """
+    Publishes draft or article directly to Dev.to via API (https://dev.to/api/articles).
+    """
+    if not api_key:
+        return {"status": "error", "message": "Dev.to API key is missing."}
+    try:
+        import requests
+
+        clean_tags = [re.sub(r"[^a-zA-Z0-9]", "", tag).lower() for tag in (tags or []) if tag]
+        # Dev.to accepts max 4 tags
+        clean_tags = [t for t in clean_tags if t][:4]
+
+        payload = {
+            "article": {
+                "title": title,
+                "body_markdown": markdown_content,
+                "published": published,
+                "tags": clean_tags,
+            }
+        }
+        headers = {
+            "api-key": api_key,
+            "Content-Type": "application/json",
+            "User-Agent": "AIBlogWritingAgent/1.0",
+        }
+        res = requests.post("https://dev.to/api/articles", json=payload, headers=headers, timeout=15)
+        if res.status_code in (200, 201):
+            data = res.json()
+            return {
+                "status": "success",
+                "url": data.get("url"),
+                "id": data.get("id"),
+                "message": "Successfully published to Dev.to!",
+            }
+        else:
+            return {
+                "status": "error",
+                "status_code": res.status_code,
+                "message": f"Dev.to API returned status {res.status_code}: {res.text}",
+            }
+    except Exception as e:
+        logger.error("Failed to publish to Dev.to: %s", e)
+        return {"status": "error", "message": str(e)}
+
+
+def trigger_cms_webhook(webhook_url: str, payload: dict) -> dict:
+    """
+    Triggers a POST request to a user-defined CMS Webhook endpoint (e.g., Strapi, WordPress, Zapier).
+    """
+    if not webhook_url:
+        return {"status": "error", "message": "Webhook URL is missing."}
+    try:
+        import requests
+
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "AIBlogWritingAgent/1.0",
+        }
+        res = requests.post(webhook_url, json=payload, headers=headers, timeout=15)
+        if 200 <= res.status_code < 300:
+            return {
+                "status": "success",
+                "status_code": res.status_code,
+                "response": res.text,
+                "message": "Webhook triggered successfully!",
+            }
+        else:
+            return {
+                "status": "error",
+                "status_code": res.status_code,
+                "message": f"Webhook returned status {res.status_code}: {res.text[:300]}",
+            }
+    except Exception as e:
+        logger.error("Failed to trigger CMS webhook: %s", e)
+        return {"status": "error", "message": str(e)}
+

@@ -233,6 +233,21 @@ class ApprovalStatus(str, Enum):
     REGENERATE = "regenerate"
 
 
+class SocialPosts(BaseModel):
+    twitter_thread: List[str] = Field(
+        ...,
+        description="List of 5-7 tweets, max 280 chars per tweet, including hooks and hashtags."
+    )
+    linkedin_post: str = Field(
+        ...,
+        description="Formatted with bold text, emojis, short paragraphs, call-to-action."
+    )
+    newsletter_summary: str = Field(
+        ...,
+        description="Email digest style, 200-300 words."
+    )
+
+
 class State(TypedDict):
     topic: str
     audience: Optional[str]
@@ -286,12 +301,19 @@ class State(TypedDict):
     final_approval_status: Optional[ApprovalStatus]
     final_human_feedback: Optional[str]
 
+    # social media syndication
+    social_posts: Optional[SocialPosts]
+
     # observability & metrics
     metrics: Optional[Dict[str, Any]]
 
     final: str
     errors: Optional[List[str]]
     retry_count: int
+
+
+OverallState = State
+
 
 
 
