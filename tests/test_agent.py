@@ -18,7 +18,24 @@ from src.agent.nodes import (
     fanout,
 )
 from src.agent.rate_limiter import RateLimiter
-from src.agent.schemas import Plan, Task, RouterDecision
+from src.agent.schemas import (
+    Plan,
+    Task,
+    RouterDecision,
+    EvidenceItem,
+    SourceFilterScore,
+    SourceFilterResult,
+    ContradictionItem,
+    ContradictionReport,
+    ResearchResult,
+    OutlineValidationResult,
+    ClaimVerification,
+    FactCheckReport,
+    FactCheckItem,
+    SEOPlan,
+    SEOFAQItem,
+    ApprovalStatus,
+)
 
 
 def test_insert_placeholders_into_md_with_section_title():
@@ -264,6 +281,8 @@ def test_hitl_approve_resumes_to_workers(monkeypatch):
             return RouterDecision(needs_research=False, mode="closed_book", reason="test")
         elif schema == Plan:
             return mock_plan
+        elif schema == agent_nodes.CriticEvaluation:
+            return agent_nodes.CriticEvaluation(score=8.5, passed=True, summary="Good draft", issues=[])
         elif schema == agent_nodes.GlobalImagePlan:
             return agent_nodes.GlobalImagePlan(images=[])
         return mock_plan
@@ -286,19 +305,24 @@ def test_hitl_approve_resumes_to_workers(monkeypatch):
         "evidence": [],
     }
 
-    # 1. Run until HITL pause
+    # 1. Run until HITL #1 pause (Plan Approval)
     list(test_graph_app.stream(inputs, config=config))
     snapshot1 = test_graph_app.get_state(config)
     assert snapshot1.next == ("plan_approval",)
 
-    # 2. Resume with Approve
+    # 2. Resume with Approve for HITL #1 -> pauses at HITL #2 (reducer)
     list(test_graph_app.stream(Command(resume={"action": "approve"}), config=config))
     snapshot2 = test_graph_app.get_state(config)
+    assert snapshot2.next == ("reducer",)
 
-    assert snapshot2.next == ()  # Finished cleanly!
-    assert snapshot2.values.get("approval_status") == ApprovalStatus.APPROVED
-    assert len(snapshot2.values.get("sections")) == 2
-    assert "## Section" in snapshot2.values.get("merged_md")
+    # 3. Resume HITL #2 (Final Content Review) -> completes execution
+    list(test_graph_app.stream(Command(resume={"action": "approve"}), config=config))
+    snapshot3 = test_graph_app.get_state(config)
+    assert snapshot3.next == ()
+    assert snapshot3.values.get("approval_status") == ApprovalStatus.APPROVED
+    assert snapshot3.values.get("final_approval_status") == ApprovalStatus.APPROVED
+    assert len(snapshot3.values.get("sections")) == 2
+    assert "## Section" in snapshot3.values.get("merged_md")
 
 
 def test_hitl_request_changes_revises_plan_and_pauses_again(monkeypatch):
@@ -317,6 +341,8 @@ def test_hitl_request_changes_revises_plan_and_pauses_again(monkeypatch):
         elif schema == Plan:
             call_count["plan"] += 1
             return plan_v1 if call_count["plan"] == 1 else plan_v2
+        elif schema == agent_nodes.CriticEvaluation:
+            return agent_nodes.CriticEvaluation(score=8.5, passed=True, summary="Good draft", issues=[])
         return plan_v1
 
     monkeypatch.setattr(agent_nodes, "structured_with_retry", mock_structured)
@@ -368,9 +394,12 @@ def test_hitl_multiple_revisions_and_approved_plan_to_workers(monkeypatch):
             curr = plans[min(call_idx["idx"], 2)]
             call_idx["idx"] += 1
             return curr
+        elif schema == agent_nodes.CriticEvaluation:
+            return agent_nodes.CriticEvaluation(score=8.5, passed=True, summary="Good draft", issues=[])
         elif schema == agent_nodes.GlobalImagePlan:
             return agent_nodes.GlobalImagePlan(images=[])
         return plan_v1
+
 
     worker_received_plans = []
 
@@ -407,4 +436,248 @@ def test_hitl_multiple_revisions_and_approved_plan_to_workers(monkeypatch):
     # Workers must receive ONLY Plan V3 Approved
     assert len(worker_received_plans) == 2
     assert all(t == "Plan V3 Approved" for t in worker_received_plans)
+
+
+# ------------------------------------------------------------
+# Critic / Quality Agent Evaluator-Revision Loop Tests
+# ------------------------------------------------------------
+
+from src.agent.schemas import CriticEvaluation, CriticIssue
+
+
+def test_critic_node_produces_evaluation(monkeypatch):
+    """Verify critic_node evaluates draft markdown and produces structured CriticEvaluation."""
+    eval_mock = CriticEvaluation(
+        score=8.5,
+        passed=True,
+        summary="Draft is clear and well grounded.",
+        issues=[
+            CriticIssue(
+                category="readability",
+                severity="low",
+                description="Minor wordiness in intro",
+                suggestion="Tighten intro paragraph.",
+            )
+        ],
+        revision_instructions=None,
+    )
+    monkeypatch.setattr(agent_nodes, "structured_with_retry", lambda schema, msg: eval_mock)
+
+    state = {
+        "merged_md": "# RAG\n\nDraft content...",
+        "plan": _make_plan(2),
+        "topic": "RAG",
+        "critic_retry_count": 0,
+    }
+
+    out = agent_nodes.critic_node(state)
+    assert out["critic_evaluation"].score == 8.5
+    assert out["critic_evaluation"].passed is True
+    assert len(out["critic_evaluation"].issues) == 1
+
+
+def test_route_after_critic_branches_correctly():
+    """Verify route_after_critic routes to decide_images when passed or max retries reached, else to revision."""
+    passed_eval = CriticEvaluation(score=8.0, passed=True, summary="Good", issues=[])
+    failed_eval = CriticEvaluation(score=6.0, passed=False, summary="Needs work", issues=[])
+
+    # 1. Passed -> decide_images
+    assert agent_nodes.route_after_critic({"critic_evaluation": passed_eval, "critic_retry_count": 0, "max_critic_retries": 2}) == "decide_images"
+
+    # 2. Failed with retries remaining -> revision
+    assert agent_nodes.route_after_critic({"critic_evaluation": failed_eval, "critic_retry_count": 0, "max_critic_retries": 2}) == "revision"
+
+    # 3. Failed but hit max retries -> decide_images
+    assert agent_nodes.route_after_critic({"critic_evaluation": failed_eval, "critic_retry_count": 2, "max_critic_retries": 2}) == "decide_images"
+
+
+def test_revision_node_updates_markdown_and_increments_retry(monkeypatch):
+    """Verify revision_node rewrites draft and increments critic_retry_count."""
+    monkeypatch.setattr(agent_nodes, "get_llm", lambda: object())
+    monkeypatch.setattr(
+        agent_nodes,
+        "invoke_with_retry",
+        lambda *a, **k: types.SimpleNamespace(content="# Revised RAG Title\n\nImproved draft content."),
+    )
+
+    failed_eval = CriticEvaluation(
+        score=6.0,
+        passed=False,
+        summary="Fix repetition",
+        issues=[CriticIssue(category="repetition", severity="medium", description="Dup text", suggestion="Remove dup")],
+        revision_instructions="Remove duplicated text.",
+    )
+
+    state = {
+        "topic": "RAG",
+        "merged_md": "# Original RAG\n\nOld text",
+        "critic_evaluation": failed_eval,
+        "critic_retry_count": 0,
+    }
+
+    out = agent_nodes.revision_node(state)
+    assert "# Revised RAG Title" in out["merged_md"]
+    assert out["critic_retry_count"] == 1
+
+
+# ------------------------------------------------------------
+# Research Enhancement Nodes Tests (Phase 1)
+# ------------------------------------------------------------
+
+from src.agent.schemas import (
+    SourceFilterResult,
+    SourceFilterScore,
+    ContradictionReport,
+    ContradictionItem,
+    ResearchResult,
+    EvidenceItem,
+)
+
+
+def test_source_filter_node_filters_evidence(monkeypatch):
+    """Verify source_filter_node filters evidence to keep=True items."""
+    filter_mock = SourceFilterResult(
+        scores=[
+            SourceFilterScore(url="https://good.org", relevance_score=0.9, authority_score=0.9, freshness_score=0.9, is_duplicate=False, keep=True, reason="Relevant"),
+            SourceFilterScore(url="https://spam.org", relevance_score=0.2, authority_score=0.1, freshness_score=0.1, is_duplicate=True, keep=False, reason="Spam"),
+        ]
+    )
+    monkeypatch.setattr(agent_nodes, "structured_with_retry", lambda schema, msg: filter_mock)
+
+    ev1 = EvidenceItem(title="Good", url="https://good.org", snippet="High quality content")
+    ev2 = EvidenceItem(title="Spam", url="https://spam.org", snippet="Low quality content")
+
+    state = {"topic": "RAG", "evidence": [ev1, ev2]}
+    out = agent_nodes.source_filter_node(state)
+
+    assert len(out["evidence"]) == 1
+    assert out["evidence"][0].url == "https://good.org"
+    assert len(out["source_filter_scores"]) == 2
+
+
+def test_contradiction_detector_node_identifies_conflicts(monkeypatch):
+    """Verify contradiction_detector_node identifies conflicts across sources."""
+    report_mock = ContradictionReport(
+        contradictions=[
+            ContradictionItem(
+                topic_claim="Vector DB scaling",
+                source_a_url="https://a.org",
+                source_a_claim="Supports 10M vectors",
+                source_b_url="https://b.org",
+                source_b_claim="Max 1M vectors",
+                resolution_guidance="Note version differences",
+            )
+        ]
+    )
+    monkeypatch.setattr(agent_nodes, "structured_with_retry", lambda schema, msg: report_mock)
+
+    ev1 = EvidenceItem(title="Source A", url="https://a.org", snippet="Supports 10M vectors")
+    ev2 = EvidenceItem(title="Source B", url="https://b.org", snippet="Max 1M vectors")
+
+    state = {"topic": "RAG", "evidence": [ev1, ev2]}
+    out = agent_nodes.contradiction_detector_node(state)
+
+    assert len(out["contradictions"]) == 1
+    assert out["contradictions"][0]["topic_claim"] == "Vector DB scaling"
+
+
+def test_structured_research_node_synthesizes_research_result(monkeypatch):
+    """Verify structured_research_node normalizes evidence into ResearchResult."""
+    res_mock = ResearchResult(
+        topic="RAG Architecture",
+        key_facts=["RAG combines retrieval and generation"],
+        technical_details=["Uses dense vector embeddings"],
+        code_examples=["retriever.retrieve(query)"],
+        sources=[],
+        contradictions=[],
+    )
+    monkeypatch.setattr(agent_nodes, "structured_with_retry", lambda schema, msg: res_mock)
+
+    ev1 = EvidenceItem(title="Source A", url="https://a.org", snippet="Content A")
+    state = {"topic": "RAG Architecture", "evidence": [ev1], "contradictions": []}
+
+    out = agent_nodes.structured_research_node(state)
+    assert out["research_result"].topic == "RAG Architecture"
+    assert "RAG combines retrieval and generation" in out["research_result"].key_facts
+    assert out["research_result"].filtered_sources_count == 1
+
+
+def test_outline_validator_node_evaluates_plan():
+    """Verify outline_validator_node checks plan structure and warns on missing conclusions."""
+    plan = Plan(
+        blog_title="Test Post",
+        audience="Devs",
+        tone="Direct",
+        blog_kind="explainer",
+        tasks=[
+            Task(id=1, title="Introduction", goal="Intro goal", bullets=["b1", "b2", "b3"], target_words=200),
+            Task(id=2, title="Deep Dive", goal="Dive goal", bullets=["b1", "b2", "b3"], target_words=400),
+        ]
+    )
+    state = {"plan": plan}
+    out = agent_nodes.outline_validator_node(state)
+    assert "outline_validation" in out
+    val = out["outline_validation"]
+    assert len(val.warnings) > 0
+    categories = [w.category for w in val.warnings]
+    assert "task_count" in categories or "conclusion_missing" in categories
+
+
+def test_fact_checker_node_produces_fact_report(monkeypatch):
+    """Verify fact_checker_node generates a FactCheckReport."""
+    fc_mock = FactCheckReport(
+        score=9.0,
+        total_claims_checked=2,
+        verified_claims_count=2,
+        claims=[
+            ClaimVerification(
+                claim_id="C1",
+                claim="LangGraph supports state graphs",
+                classification="SUPPORTED",
+                confidence=0.95,
+                supporting_sources=["https://docs.langchain.com"],
+                explanation="Supported by docs",
+            ),
+        ]
+    )
+    monkeypatch.setattr(agent_nodes, "structured_with_retry", lambda schema, msg: fc_mock)
+
+    state = {
+        "topic": "LangGraph",
+        "merged_md": "# LangGraph\n\nLangGraph supports state graphs.",
+        "evidence": [EvidenceItem(title="Docs", url="https://docs.langchain.com", snippet="State graphs supported")],
+    }
+    out = agent_nodes.fact_checker_node(state)
+    assert out["fact_check_report"].score == 9.0
+    assert len(out["fact_check_report"].claims) == 1
+    assert out["fact_check_report"].claims[0].classification == "SUPPORTED"
+    assert out["fact_check_report"].claims[0].verdict == "verified"
+
+
+def test_seo_agent_node_produces_seo_plan(monkeypatch):
+    """Verify seo_agent_node generates an SEOPlan with metadata and FAQs."""
+    seo_mock = SEOPlan(
+        meta_title="Mastering LangGraph in 2026",
+        meta_description="A complete guide to building agent workflows with LangGraph.",
+        primary_keyword="LangGraph",
+        secondary_keywords=["Multi-agent", "Python", "State Graph"],
+        suggested_slug="mastering-langgraph-2026",
+        target_readability_level="Intermediate",
+        faq_items=[SEOFAQItem(question="What is LangGraph?", answer="A multi-agent orchestrator framework.")],
+        seo_score=9.5,
+    )
+    monkeypatch.setattr(agent_nodes, "structured_with_retry", lambda schema, msg: seo_mock)
+
+    state = {
+        "topic": "LangGraph",
+        "keywords": ["LangGraph", "Multi-agent"],
+        "merged_md": "# LangGraph Guide\n\nContent here.",
+    }
+    out = agent_nodes.seo_agent_node(state)
+    assert out["seo_plan"].meta_title == "Mastering LangGraph in 2026"
+    assert out["seo_plan"].seo_score == 9.5
+    assert len(out["seo_plan"].faq_items) == 1
+
+
+
 

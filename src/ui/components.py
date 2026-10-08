@@ -75,6 +75,12 @@ def render_content_brief() -> Tuple[bool, Dict[str, Any]]:
                 index=0,
                 key="brief_tone",
             )
+            style_profile = st.selectbox(
+                "Article Style Profile",
+                ["Technical Tutorial", "Beginner Friendly", "Research Style", "Developer Blog", "LinkedIn Post", "SEO Blog"],
+                index=0,
+                key="brief_style_profile",
+            )
         with col2:
             format_kind = st.selectbox(
                 "Article Format",
@@ -111,6 +117,7 @@ def render_content_brief() -> Tuple[bool, Dict[str, Any]]:
             f"Topic: {topic.strip()}\n"
             f"Target Audience: {audience}\n"
             f"Tone: {tone}\n"
+            f"Style Profile: {style_profile}\n"
             f"Format: {format_kind}\n"
             f"Target Length: {word_count}\n"
             f"Keywords: {keywords.strip()}\n"
@@ -124,6 +131,7 @@ def render_content_brief() -> Tuple[bool, Dict[str, Any]]:
             "full_prompt": full_topic_prompt,
             "audience": audience,
             "tone": tone,
+            "style_profile": style_profile,
             "format": format_kind,
             "word_count": word_count,
             "keywords": keywords.strip(),
@@ -141,10 +149,18 @@ def render_workflow_progress(current_node: str, state: Dict[str, Any]):
     steps = [
         ("router", "Route"),
         ("research", "Research"),
+        ("source_filter", "Filter"),
+        ("contradiction_detector", "Detect"),
+        ("structured_research", "Synthesize"),
         ("orchestrator", "Plan"),
-        ("plan_approval", "🧑 Human Review"),
+        ("outline_validator", "Validate"),
+        ("plan_approval", "🧑 HITL #1"),
         ("worker", "Writing"),
-        ("reducer", "Assemble"),
+        ("fact_checker", "🛡️ FactCheck"),
+        ("critic", "🧐 Critic"),
+        ("seo_agent", "🎯 SEO"),
+        ("final_approval", "🧑 HITL #2"),
+        ("reducer", "Export"),
     ]
 
     completed_nodes = state.get("_completed_nodes", [])
@@ -161,7 +177,7 @@ def render_workflow_progress(current_node: str, state: Dict[str, Any]):
         if is_current:
             icon = "●"
             color = "#FF4B4B"
-            status_text = f"**{label}** (In Progress)"
+            status_text = f"**{label}**"
         elif is_done:
             icon = "✓"
             color = "#10B981"
@@ -172,8 +188,8 @@ def render_workflow_progress(current_node: str, state: Dict[str, Any]):
             status_text = f"{label}"
 
         with cols[idx]:
-            st.markdown(f"<div style='text-align: center; color: {color}; font-size: 1.2rem;'>{icon}</div>", unsafe_allow_html=True)
-            st.markdown(f"<div style='text-align: center; font-size: 0.8rem; color: {color};'>{status_text}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: center; color: {color}; font-size: 1rem;'>{icon}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: center; font-size: 0.75rem; color: {color};'>{status_text}</div>", unsafe_allow_html=True)
 
     evidence_count = len(state.get("evidence", []) or [])
     sections_count = len(state.get("sections", []) or [])
@@ -187,7 +203,7 @@ def render_plan_approval_card(interrupt_value: Dict[str, Any]) -> Tuple[Optional
     Renders Human-in-the-Loop (HITL) Plan Approval UI card.
     Returns (action, feedback) when user acts, else (None, None).
     """
-    st.warning("### 🧑 **PLAN APPROVAL REQUIRED**", icon="✋")
+    st.warning("### 🧑 **PLAN APPROVAL REQUIRED (HITL #1)**", icon="✋")
     st.info("The multi-agent pipeline has generated the article plan. Please review and approve the outline before section generation begins.")
 
     plan_data = interrupt_value.get("plan", {})
@@ -199,7 +215,6 @@ def render_plan_approval_card(interrupt_value: Dict[str, Any]) -> Tuple[Optional
         plan_dict = {}
 
     plan_version = interrupt_value.get("plan_version", 1)
-    topic = interrupt_value.get("topic", "N/A")
     evidence_items = interrupt_value.get("evidence", [])
 
     st.markdown(f"#### 📄 **Article Plan (Version {plan_version})**")
@@ -280,6 +295,69 @@ def render_plan_approval_card(interrupt_value: Dict[str, Any]) -> Tuple[Optional
                 action_selected = "request_changes"
                 feedback_selected = feedback_input.strip()
                 st.session_state["show_change_request_form"] = False
+
+    return action_selected, feedback_selected
+
+
+def render_final_approval_card(interrupt_value: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Renders Human-in-the-Loop Checkpoint #2 (Final Content Review) UI card.
+    Returns (action, feedback) when user acts.
+    """
+    st.success("### 🧑 **FINAL ARTICLE REVIEW (HITL #2)**", icon="✨")
+    st.info("The section workers, quality critic, fact checker, and SEO optimizer have completed the article draft. Please review before final publication.")
+
+    merged_md = interrupt_value.get("merged_md", "")
+    critic_eval = interrupt_value.get("critic_evaluation") or {}
+    fact_check = interrupt_value.get("fact_check_report") or {}
+    seo_plan = interrupt_value.get("seo_plan") or {}
+
+    critic_score = critic_eval.get("score", 0.0) if isinstance(critic_eval, dict) else getattr(critic_eval, "score", 0.0)
+    fc_score = fact_check.get("score", 0.0) if isinstance(fact_check, dict) else getattr(fact_check, "score", 0.0)
+    seo_score = seo_plan.get("seo_score", 0.0) if isinstance(seo_plan, dict) else getattr(seo_plan, "seo_score", 0.0)
+
+    mcol1, mcol2, mcol3 = st.columns(3)
+    mcol1.metric("Critic Quality Score", f"{critic_score:.1f} / 10")
+    mcol2.metric("Fact Grounding Score", f"{fc_score:.1f} / 10")
+    mcol3.metric("SEO Optimization Score", f"{seo_score:.1f} / 10")
+
+    with st.expander("📄 **Preview Finished Article Markdown**", expanded=True):
+        st.markdown(merged_md[:3000] + ("\n\n*(Truncated preview for review)*" if len(merged_md) > 3000 else ""))
+
+    st.divider()
+    st.markdown("#### **Final Review Action**")
+
+    if "show_final_change_form" not in st.session_state:
+        st.session_state["show_final_change_form"] = False
+
+    bcol1, bcol2 = st.columns(2)
+    action_selected = None
+    feedback_selected = None
+
+    with bcol1:
+        if st.button("🚀 Approve & Export Article", type="primary", use_container_width=True, key="hitl2_approve_btn"):
+            action_selected = "approve"
+            st.session_state["show_final_change_form"] = False
+
+    with bcol2:
+        if st.button("✏️ Request Final Revision", type="secondary", use_container_width=True, key="hitl2_request_changes_btn"):
+            st.session_state["show_final_change_form"] = not st.session_state["show_final_change_form"]
+
+    if st.session_state.get("show_final_change_form"):
+        st.markdown("---")
+        st.markdown("##### ✏️ **Specify Final Revision Instructions**")
+        feedback_input = st.text_area(
+            "Revision Instructions",
+            placeholder="e.g. 'Make section 2 more concise', 'Add more code comments in section 3'",
+            key="hitl2_feedback_text",
+        )
+        if st.button("📨 Submit Final Revision", type="primary", key="hitl2_submit_changes_btn"):
+            if not feedback_input.strip():
+                st.warning("Please provide revision instructions before submitting.")
+            else:
+                action_selected = "request_changes"
+                feedback_selected = feedback_input.strip()
+                st.session_state["show_final_change_form"] = False
 
     return action_selected, feedback_selected
 

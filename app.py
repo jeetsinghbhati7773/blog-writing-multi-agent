@@ -17,6 +17,7 @@ try:
         render_workflow_progress,
         render_system_status_sidebar,
         render_plan_approval_card,
+        render_final_approval_card,
     )
 except ImportError:
     import src.ui.components as comp_mod
@@ -27,6 +28,7 @@ except ImportError:
         render_workflow_progress,
         render_system_status_sidebar,
         render_plan_approval_card,
+        render_final_approval_card,
     )
 
 try:
@@ -290,10 +292,15 @@ else:
                 execute_graph(inputs)
                 st.rerun()
 
-        # Render Human-in-the-Loop Plan Approval Interface
+        # Render Human-in-the-Loop Approval Interfaces (HITL #1 and HITL #2)
         active_interrupt = st.session_state.get("active_interrupt")
         if active_interrupt and not out:
-            action, feedback = render_plan_approval_card(active_interrupt)
+            interrupt_type = active_interrupt.get("type") if isinstance(active_interrupt, dict) else None
+            if interrupt_type == "final_content_approval":
+                action, feedback = render_final_approval_card(active_interrupt)
+            else:
+                action, feedback = render_plan_approval_card(active_interrupt)
+
             if action:
                 cmd = Command(resume={"action": action, "feedback": feedback})
                 st.session_state["active_interrupt"] = None

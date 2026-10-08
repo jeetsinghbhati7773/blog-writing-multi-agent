@@ -189,6 +189,53 @@ def render_images_tab(out: Dict[str, Any]):
                 )
 
 
+def render_critic_tab(out: Dict[str, Any]):
+    st.subheader("🧐 Autonomous Critic & Quality Audit")
+    eval_obj = out.get("critic_evaluation")
+    if not eval_obj:
+        st.info("No critic evaluation details available for this run.")
+        return
+
+    if hasattr(eval_obj, "model_dump"):
+        eval_dict = eval_obj.model_dump()
+    elif isinstance(eval_obj, dict):
+        eval_dict = eval_obj
+    else:
+        eval_dict = json.loads(json.dumps(eval_obj, default=str))
+
+    score = eval_dict.get("score", 0.0)
+    passed = eval_dict.get("passed", False)
+    summary = eval_dict.get("summary", "")
+    issues = eval_dict.get("issues", [])
+    revisions_done = out.get("critic_retry_count", 0)
+
+    cols = st.columns(3)
+    cols[0].metric("OVERALL QUALITY SCORE", f"{score:.1f} / 10")
+    cols[1].metric("AUDIT STATUS", "✅ APPROVED" if passed else "⚠️ REVISION NEEDED")
+    cols[2].metric("REVISIONS PERFORMED", f"{revisions_done} revision(s)")
+
+    if summary:
+        st.markdown("#### **Evaluation Summary**")
+        st.info(summary)
+
+    if issues:
+        st.markdown("#### **Identified Quality Issues & Recommendations**")
+        rows = []
+        for i in issues:
+            if hasattr(i, "model_dump"):
+                i = i.model_dump()
+            rows.append({
+                "Category": str(i.get("category", "")).capitalize(),
+                "Severity": str(i.get("severity", "")).upper(),
+                "Description": i.get("description"),
+                "Actionable Suggestion": i.get("suggestion"),
+            })
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+        with st.expander("📄 View Detailed Critic Audit JSON"):
+            st.json(eval_dict)
+
+
 def render_logs_tab(logs: List[str]):
     st.subheader("🧾 Technical Run Logs")
     if "logs" not in st.session_state:
@@ -198,6 +245,114 @@ def render_logs_tab(logs: List[str]):
 
     all_logs = "\n\n".join(st.session_state["logs"][-100:])
     st.text_area("Live Execution Stream Log", value=all_logs, height=500)
+
+
+def render_fact_check_tab(out: Dict[str, Any]):
+    st.subheader("🛡️ Fact & Citation Grounding Audit")
+    fc_obj = out.get("fact_check_report")
+    if not fc_obj:
+        st.info("No fact check audit details available for this run.")
+        return
+
+    if hasattr(fc_obj, "model_dump"):
+        fc_dict = fc_obj.model_dump()
+    elif isinstance(fc_obj, dict):
+        fc_dict = fc_obj
+    else:
+        fc_dict = json.loads(json.dumps(fc_obj, default=str))
+
+    score = fc_dict.get("score", 0.0)
+    claims = fc_dict.get("claims", [])
+    total = fc_dict.get("total_claims_checked", len(claims))
+    supported_count = len([
+        c for c in claims
+        if (c.get("classification") if isinstance(c, dict) else getattr(c, "classification", "")) in ("SUPPORTED", "PARTIALLY_SUPPORTED") or (c.get("verdict") if isinstance(c, dict) else "") == "verified"
+    ])
+
+    cols = st.columns(3)
+    cols[0].metric("FACT GROUNDING SCORE", f"{score:.1f} / 10")
+    cols[1].metric("CLAIMS SUPPORTED", f"{supported_count} / {total}")
+    cols[2].metric("GROUNDING RATE", f"{(supported_count/max(1,total))*100:.0f}%")
+
+    if claims:
+        st.markdown("#### **Atomic Claim Verification Matrix**")
+        rows = []
+        for c in claims:
+            if hasattr(c, "model_dump"):
+                c = c.model_dump()
+            classification = str(c.get("classification") or c.get("verdict", "")).upper()
+            if classification in ("SUPPORTED", "VERIFIED"):
+                icon = "✅ SUPPORTED"
+            elif classification == "PARTIALLY_SUPPORTED":
+                icon = "⚡ PARTIALLY SUPPORTED"
+            elif classification == "CONTRADICTED":
+                icon = "❌ CONTRADICTED"
+            else:
+                icon = "⚠️ UNSUPPORTED"
+
+            sources = c.get("supporting_sources") or c.get("contradicting_sources") or []
+            src_str = ", ".join(sources) if sources else (c.get("source_url") or "Evidence Pack")
+
+            rows.append({
+                "Status": icon,
+                "Factual Claim": c.get("claim"),
+                "Evidence Source": src_str,
+                "Explanation": c.get("explanation"),
+            })
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
+def render_seo_tab(out: Dict[str, Any]):
+    st.subheader("🎯 SEO & Search Optimization Package")
+    seo_obj = out.get("seo_plan")
+    if not seo_obj:
+        st.info("No SEO optimization details available for this run.")
+        return
+
+    if hasattr(seo_obj, "model_dump"):
+        seo_dict = seo_obj.model_dump()
+    elif isinstance(seo_obj, dict):
+        seo_dict = seo_obj
+    else:
+        seo_dict = json.loads(json.dumps(seo_obj, default=str))
+
+    score = seo_dict.get("seo_score", 0.0)
+    cols = st.columns(3)
+    cols[0].metric("SEO SCORE", f"{score:.1f} / 10")
+    cols[1].metric("READABILITY LEVEL", str(seo_dict.get("target_readability_level", "Intermediate")))
+    cols[2].metric("SUGGESTED SLUG", f"/{seo_dict.get('suggested_slug', 'article')}")
+
+    st.markdown("#### **Search Engine Snippet Preview**")
+    meta_title = seo_dict.get("meta_title", "")
+    meta_desc = seo_dict.get("meta_description", "")
+    slug = seo_dict.get("suggested_slug", "")
+
+    st.markdown(
+        f"""
+        <div style="background: #1E293B; border-radius: 8px; padding: 1rem; border: 1px solid #334155; margin-bottom: 1rem;">
+            <div style="color: #60A5FA; font-size: 0.8rem; margin-bottom: 2px;">https://yourblog.com › posts › {slug}</div>
+            <div style="color: #38BDF8; font-size: 1.15rem; font-weight: 600; margin-bottom: 4px;">{html.escape(meta_title)}</div>
+            <div style="color: #94A3B8; font-size: 0.9rem;">{html.escape(meta_desc)}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    col_k1, col_k2 = st.columns(2)
+    with col_k1:
+        st.markdown(f"**Primary Keyword:** `{seo_dict.get('primary_keyword', '')}`")
+    with col_k2:
+        sec_kw = ", ".join(seo_dict.get("secondary_keywords", []))
+        st.markdown(f"**Secondary Keywords:** `{sec_kw}`")
+
+    faqs = seo_dict.get("faq_items", [])
+    if faqs:
+        st.markdown("#### **Frequently Asked Questions (FAQ)**")
+        for item in faqs:
+            if hasattr(item, "model_dump"):
+                item = item.model_dump()
+            with st.expander(f"❓ {item.get('question')}"):
+                st.write(item.get("answer"))
 
 
 def render_article_workspace(out: Dict[str, Any], is_history: bool = False, blog_name: str = ""):
@@ -213,11 +368,17 @@ def render_article_workspace(out: Dict[str, Any], is_history: bool = False, blog
         render_preview_tab(out)
     else:
         render_article_metrics(out)
-        tab_article, tab_research, tab_plan, tab_visuals, tab_logs = st.tabs(
-            ["📝 Article", "🔎 Research", "🧩 Plan", "🖼️ Visuals", "🧾 Run Details"]
+        tab_article, tab_seo, tab_fc, tab_critic, tab_research, tab_plan, tab_visuals, tab_logs = st.tabs(
+            ["📝 Article", "🎯 SEO", "🛡️ Fact Check", "🧐 Quality Audit", "🔎 Research", "🧩 Plan", "🖼️ Visuals", "🧾 Run Details"]
         )
         with tab_article:
             render_preview_tab(out)
+        with tab_seo:
+            render_seo_tab(out)
+        with tab_fc:
+            render_fact_check_tab(out)
+        with tab_critic:
+            render_critic_tab(out)
         with tab_research:
             render_evidence_tab(out)
         with tab_plan:
@@ -226,6 +387,7 @@ def render_article_workspace(out: Dict[str, Any], is_history: bool = False, blog
             render_images_tab(out)
         with tab_logs:
             render_logs_tab([])
+
 
 
 def cb_back_to_archive():
