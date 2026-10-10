@@ -12,10 +12,12 @@ from src.paths import OUTPUTS_DIR
 logger = logging.getLogger(__name__)
 
 
-def safe_slug(title: str) -> str:
+def safe_slug(title: str, max_chars: int = 60) -> str:
     s = title.strip().lower()
     s = re.sub(r"[^a-z0-9 _-]+", "", s)
     s = re.sub(r"\s+", "_", s).strip("_")
+    if max_chars and len(s) > max_chars:
+        s = s[:max_chars].rstrip("_")
     return s or "blog"
 
 
@@ -62,6 +64,7 @@ def try_stream(graph_app, inputs: Any, config: Optional[Dict[str, Any]] = None) 
                 yield ("updates", chunk)
             elif mode == "values":
                 final_state = chunk
+                yield ("values", chunk)
         yield ("final", final_state if final_state is not None else {})
         return
     except Exception as e:

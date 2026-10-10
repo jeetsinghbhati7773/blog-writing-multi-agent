@@ -6,35 +6,33 @@ import time
 
 
 class RateLimiter:
-    """Thread-safe, spaced-slot rate limiter for smoothing request bursts.
+    """Thread-safe, spaced-slot rate limiter with per-key tracking.
 
-    Each :meth:`acquire` call reserves the next evenly spaced time slot and
-    sleeps until it arrives. The reservation happens under a short lock, but the
-    wait itself happens OUTSIDE the lock, so many parallel callers (e.g. the
-    LangGraph ``Send`` fanout workers) each receive a distinct, staggered start
-    time and then sleep concurrently rather than all firing at once.
-
-    This replaces the previous fixed ``time.sleep(...)`` staggering in the
-    worker node. Instead of hard-coding a per-task delay (which added dead time
-    and did not adapt to the number of workers), request starts are spaced by a
-    single, shared ``min_interval`` — enough to avoid Groq TPM burst spikes,
-    while overlapping the waits so total latency stays low.
+    If key_index is provided (e.g. for multi-account key rotation), callers with
+    different keys do NOT block each other: each key runs on its own independent slot schedule.
+    Callers on the same key are spaced by min_interval to avoid TPM burst spikes.
     """
 
     def __init__(self, min_interval: float):
         self.min_interval = max(0.0, float(min_interval))
         self._lock = threading.Lock()
-        self._next_allowed = 0.0  # monotonic timestamp of the next free slot
+        self._next_allowed_by_key: dict[int, float] = {}
+        self._next_allowed_default = 0.0
 
-    def acquire(self) -> float:
+    def acquire(self, key_index: Optional[int] = None) -> float:
         """Block until this caller's spaced slot arrives. Returns seconds slept."""
         if self.min_interval <= 0:
             return 0.0
 
         with self._lock:
             now = time.monotonic()
-            target = self._next_allowed if self._next_allowed > now else now
-            self._next_allowed = target + self.min_interval
+            if key_index is not None:
+                current_next = self._next_allowed_by_key.get(key_index, 0.0)
+                target = current_next if current_next > now else now
+                self._next_allowed_by_key[key_index] = target + self.min_interval
+            else:
+                target = self._next_allowed_default if self._next_allowed_default > now else now
+                self._next_allowed_default = target + self.min_interval
 
         delay = target - time.monotonic()
         if delay > 0:

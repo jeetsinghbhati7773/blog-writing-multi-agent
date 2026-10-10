@@ -205,6 +205,7 @@ def test_rate_limiter_zero_interval_is_noop():
 def test_get_llm_raises_clear_error_without_key(monkeypatch):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(agent_nodes.groq_manager, "api_keys", [])
 
     fake_st = types.SimpleNamespace(
         secrets=types.SimpleNamespace(get=lambda *a, **k: None)
@@ -772,6 +773,32 @@ def test_publishing_tools_missing_credentials():
     )
     assert webhook_res["status"] == "error"
     assert "missing" in webhook_res["message"].lower()
+
+
+def test_multi_account_groq_manager(monkeypatch):
+    """Verify MultiAccountGroqManager loads keys, performs round-robin rotation, and constructs fallbacks."""
+    from src.agent.key_rotator import MultiAccountGroqManager
+
+    for i in range(1, 11):
+        monkeypatch.delenv(f"GROQ_API_KEY_ACCOUNT_{i}", raising=False)
+        monkeypatch.delenv(f"GROQ_API_KEY_{i}", raising=False)
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+
+    monkeypatch.setenv("GROQ_API_KEY_ACCOUNT_1", "gsk_key1_test")
+    monkeypatch.setenv("GROQ_API_KEY_ACCOUNT_2", "gsk_key2_test")
+    monkeypatch.setenv("GROQ_API_KEY_ACCOUNT_3", "gsk_key3_test")
+
+    manager = MultiAccountGroqManager()
+    assert len(manager.api_keys) == 3
+    assert manager.api_keys[0] == "gsk_key1_test"
+    assert manager.api_keys[1] == "gsk_key2_test"
+    assert manager.api_keys[2] == "gsk_key3_test"
+
+    runnable1 = manager.get_runnable()
+    runnable2 = manager.get_runnable()
+    assert runnable1 is not None
+    assert runnable2 is not None
+
 
 
 

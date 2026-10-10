@@ -1,7 +1,14 @@
 import json
+import logging
 import uuid
 from datetime import date
 from typing import Any, Dict, List
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 import streamlit as st
 from langgraph.types import Command
@@ -208,6 +215,30 @@ else:
         def log(msg: str):
             logs.append(msg)
 
+        NODE_DISPLAY_NAMES = {
+            "router": "🎯 Router Agent (Analyzing Prompt & Research Mode)",
+            "research": "🔎 Web Research Agent (Executing Web Queries)",
+            "source_filter": "🛡️ Source Quality Filter (Scoring Evidence Authority)",
+            "contradiction_detector": "⚡ Contradiction Detector (Cross-Checking Claims)",
+            "structured_research": "📝 Structured Research Synthesizer",
+            "orchestrator": "🧩 Orchestrator / Planner (Synthesizing Execution Plan)",
+            "outline_validator": "Outline Quality Validator (Checking Constraints)",
+            "plan_approval": "🧑 Human Plan Approval Checkpoint",
+            "worker": "⚡ Parallel Worker Agents (Drafting Sections)",
+            "reducer": "📚 Content Reducer & Quality Pipeline",
+            "merge_content": "📚 Reducer Node (Merging Section Drafts)",
+            "fact_checker": "🛡️ Fact & Citation Grounding Audit",
+            "fact_repair": "🛠️ Fact Repair Agent",
+            "critic": "🧐 Autonomous Quality Critic Audit",
+            "revision": "✍️ Content Revision Loop",
+            "seo_agent": "🎯 SEO Optimization Agent",
+            "final_approval": "🧑 Human Final Review Checkpoint",
+            "decide_images": "🖼️ Visual Planner Agent",
+            "generate_and_place_images": "🎨 Image Generation Engine",
+            "visual_agent": "📊 Mermaid Diagram Generator",
+            "social_syndication": "📢 Social Media Syndication Node",
+        }
+
         # Helper to execute/resume graph
         def execute_graph(stream_input: Any):
             thread_id = st.session_state.get("thread_id") or str(uuid.uuid4())
@@ -215,21 +246,26 @@ else:
             config = {"configurable": {"thread_id": thread_id}}
 
             status = st.status("🚀 Running Autonomous Multi-Agent Pipeline...", expanded=True)
+            status.write("➡️ **Active Agent Node:** `🎯 Router Agent (Analyzing Prompt & Research Mode)`")
             progress_area = st.empty()
 
             current_state: Dict[str, Any] = {"_completed_nodes": []}
             last_node = None
 
-            for kind, payload in try_stream(graph_app, stream_input, config=config):
-                if kind in ("updates", "values"):
-                    node_name = None
-                    if isinstance(payload, dict) and len(payload) == 1 and isinstance(next(iter(payload.values())), dict):
-                        node_name = next(iter(payload.keys()))
-                    if node_name and node_name != last_node:
-                        status.write(f"➡️ Active Agent Node: `{node_name}`")
-                        if last_node and last_node not in current_state["_completed_nodes"]:
-                            current_state["_completed_nodes"].append(last_node)
-                        last_node = node_name
+            try:
+                for kind, payload in try_stream(graph_app, stream_input, config=config):
+                    if kind == "updates" and isinstance(payload, dict):
+                        node_name = None
+                        for k in payload.keys():
+                            if k in NODE_DISPLAY_NAMES or not k.startswith("_"):
+                                node_name = k
+                                break
+                        if node_name and node_name != last_node:
+                            disp_name = NODE_DISPLAY_NAMES.get(node_name, node_name.replace("_", " ").title())
+                            status.write(f"➡️ **Active Agent Node:** `{disp_name}`")
+                            if last_node and last_node not in current_state["_completed_nodes"]:
+                                current_state["_completed_nodes"].append(last_node)
+                            last_node = node_name
 
                     current_state = extract_latest_state(current_state, payload)
 
@@ -238,16 +274,20 @@ else:
 
                     log(f"[{kind}] {json.dumps(payload, default=str)[:1200]}")
 
-            # Inspect checkpointer snapshot to handle HITL pause vs pipeline completion
-            snapshot = graph_app.get_state(config)
-            if snapshot.next and ("plan_approval" in snapshot.next or (snapshot.tasks and any(t.interrupts for t in snapshot.tasks))):
-                st.session_state["active_interrupt"] = snapshot.tasks[0].interrupts[0].value if snapshot.tasks and snapshot.tasks[0].interrupts else snapshot.values
-                st.session_state["last_out"] = None
-                status.update(label="⏸️ Execution Paused: Human Plan Approval Required", state="running", expanded=False)
-            else:
-                st.session_state["active_interrupt"] = None
-                st.session_state["last_out"] = snapshot.values
-                status.update(label="✅ Article Generation Complete!", state="complete", expanded=False)
+                # Inspect checkpointer snapshot to handle HITL pause vs pipeline completion
+                snapshot = graph_app.get_state(config)
+                if snapshot.next and ("plan_approval" in snapshot.next or (snapshot.tasks and any(t.interrupts for t in snapshot.tasks))):
+                    st.session_state["active_interrupt"] = snapshot.tasks[0].interrupts[0].value if snapshot.tasks and snapshot.tasks[0].interrupts else snapshot.values
+                    st.session_state["last_out"] = None
+                    status.update(label="⏸️ Execution Paused: Human Plan Approval Required", state="running", expanded=False)
+                else:
+                    st.session_state["active_interrupt"] = None
+                    st.session_state["last_out"] = snapshot.values
+                    status.update(label="✅ Article Generation Complete!", state="complete", expanded=False)
+            except Exception as pipeline_err:
+                logger.error("Pipeline execution failed: %s", pipeline_err, exc_info=True)
+                status.update(label=f"❌ Generation Error: {pipeline_err}", state="error", expanded=True)
+                st.error(f"**Pipeline Error:** {pipeline_err}")
 
         # Render Content Brief Editor if not actively awaiting HITL approval or viewing generated article
         active_interrupt = st.session_state.get("active_interrupt")

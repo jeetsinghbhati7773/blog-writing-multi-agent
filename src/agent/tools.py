@@ -185,13 +185,15 @@ def gemini_generate_image_bytes(prompt: str) -> bytes:
     return generate_png_diagram_bytes(prompt)
 
 
-def safe_slug(title: str) -> str:
+def safe_slug(title: str, max_chars: int = 60) -> str:
     """
-    Converts title into a clean filename-safe slug.
+    Converts title into a clean filename-safe slug capped for Windows filesystem path limits.
     """
     s = title.strip().lower()
     s = re.sub(r"[^a-z0-9 _-]+", "", s)
     s = re.sub(r"\s+", "_", s).strip("_")
+    if max_chars and len(s) > max_chars:
+        s = s[:max_chars].rstrip("_")
     return s or "blog"
 
 
